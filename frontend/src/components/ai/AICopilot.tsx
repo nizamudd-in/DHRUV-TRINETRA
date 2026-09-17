@@ -1,0 +1,257 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Station, CopilotMessage } from '../../types';
+import { Bot, Send, Sparkles, ShieldCheck, CornerDownRight, RefreshCw, User } from 'lucide-react';
+import { api } from '../../services/api';
+
+interface AICopilotProps {
+  station: Station;
+}
+
+export const AICopilot: React.FC<AICopilotProps> = ({ station }) => {
+  const [messages, setMessages] = useState<CopilotMessage[]>([
+    {
+      id: 'init-1',
+      sender: 'assistant',
+      text: `Hello, Commander. I am **PolarTwin AI Operations Copilot**, connected to live telemetry from **${station.name}** and Maitri. I monitor infrastructure health, forecast fuel depletion, diagnose vibration anomalies, and model operational contingencies. How may I assist you today?`,
+      timestamp: '07:30 UTC',
+      confidence: 0.99,
+      suggestedFollowups: [
+        'Which asset needs attention first?',
+        'Why did energy consumption increase today?',
+        'What is our winter fuel runway?',
+        'Are replacement bearings in stock for GEN-02?'
+      ]
+    }
+  ]);
+  const [inputPrompt, setInputPrompt] = useState('');
+  const [loading, setLoading] = useState(false);
+  const scrollEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
+  const handleSend = async (queryText?: string) => {
+    const textToSend = queryText || inputPrompt;
+    if (!textToSend.trim() || loading) return;
+
+    const userMsg: CopilotMessage = {
+      id: Math.random().toString(),
+      sender: 'user',
+      text: textToSend,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setMessages(prev => [...prev, userMsg]);
+    if (!queryText) setInputPrompt('');
+    setLoading(true);
+
+    try {
+      const response = await api.queryCopilot(textToSend, station.stationId);
+      setMessages(prev => [...prev, response]);
+    } catch (e) {
+      const errorMsg: CopilotMessage = {
+        id: Math.random().toString(),
+        sender: 'assistant',
+        text: 'Telemetry query timeout. Station edge gateway buffered data is safe.',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      setMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      height: 'calc(100vh - 120px)',
+      maxHeight: '800px',
+      gap: 16
+    }}>
+      {/* Top Banner */}
+      <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{
+            width: 36,
+            height: 36,
+            borderRadius: 'var(--radius-md)',
+            background: 'linear-gradient(135deg, #00e5ff 0%, #0284c7 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: 'var(--shadow-cyan-glow)'
+          }}>
+            <Bot size={22} color="#060e1a" />
+          </div>
+          <div>
+            <h2 style={{ fontSize: '1.05rem', fontWeight: 700, margin: 0, color: '#fff' }}>
+              PolarTwin AI Operations Copilot — {station.name}
+            </h2>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+              Explainable Physics-Informed Digital Twin Assistant • Zero Hallucination Mode
+            </div>
+          </div>
+        </div>
+
+        <span className="badge badge-normal">AI TELEMETRY SYNCED</span>
+      </div>
+
+      {/* Chat Messages Container */}
+      <div className="glass-panel" style={{
+        flex: 1,
+        overflowY: 'auto',
+        padding: '20px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16
+      }}>
+        {messages.map(msg => {
+          const isAssistant = msg.sender === 'assistant';
+
+          return (
+            <div
+              key={msg.id}
+              style={{
+                display: 'flex',
+                gap: 12,
+                alignSelf: isAssistant ? 'flex-start' : 'flex-end',
+                maxWidth: isAssistant ? '85%' : '75%'
+              }}
+            >
+              {isAssistant && (
+                <div style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: '50%',
+                  background: 'rgba(0, 229, 255, 0.15)',
+                  border: '1px solid var(--accent-cyan)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
+                }}>
+                  <Sparkles size={16} color="var(--accent-cyan)" />
+                </div>
+              )}
+
+              <div style={{
+                background: isAssistant ? 'rgba(16, 33, 56, 0.85)' : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                border: `1px solid ${isAssistant ? 'var(--panel-border)' : 'rgba(56, 189, 248, 0.4)'}`,
+                borderRadius: 'var(--radius-lg)',
+                padding: '14px 18px',
+                color: '#fff',
+                fontSize: '0.88rem',
+                lineHeight: 1.5,
+                boxShadow: 'var(--shadow-sm)'
+              }}>
+                <div style={{ whiteSpace: 'pre-line' }}>
+                  {msg.text}
+                </div>
+
+                {/* Contributing factors if present */}
+                {msg.contributingFactors && msg.contributingFactors.length > 0 && (
+                  <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--accent-cyan)', textTransform: 'uppercase', marginBottom: 4 }}>
+                      Key Telemetry Indicators:
+                    </div>
+                    <ul style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', paddingLeft: '16px' }}>
+                      {msg.contributingFactors.map((f, i) => (
+                        <li key={i}>{f}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Recommended actions if present */}
+                {msg.recommendedActions && msg.recommendedActions.length > 0 && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--status-normal)', textTransform: 'uppercase', marginBottom: 4 }}>
+                      Action Protocol:
+                    </div>
+                    <ul style={{ fontSize: '0.78rem', color: '#f1f5f9', paddingLeft: '16px' }}>
+                      {msg.recommendedActions.map((a, i) => (
+                        <li key={i}>{a}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Timestamp & Confidence */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                  <span>{msg.timestamp}</span>
+                  {msg.confidence && (
+                    <span>Confidence: {(msg.confidence * 100).toFixed(0)}%</span>
+                  )}
+                </div>
+
+                {/* Follow up pills */}
+                {msg.suggestedFollowups && msg.suggestedFollowups.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
+                    {msg.suggestedFollowups.map((pill, i) => (
+                      <button
+                        key={i}
+                        onClick={() => handleSend(pill)}
+                        className="btn btn-outline"
+                        style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: '9999px', background: 'rgba(56, 189, 248, 0.08)' }}
+                      >
+                        <CornerDownRight size={11} color="var(--accent-cyan)" /> {pill}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {!isAssistant && (
+                <div style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: '50%',
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
+                }}>
+                  <User size={16} color="#fff" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {loading && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--accent-cyan)', fontSize: '0.8rem' }}>
+            <RefreshCw size={16} className="radar-spinner" />
+            <span>Analyzing multi-modal station telemetry and running physics regression...</span>
+          </div>
+        )}
+        <div ref={scrollEndRef} />
+      </div>
+
+      {/* Input Box */}
+      <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', gap: 10 }}>
+        <input
+          type="text"
+          placeholder="Ask PolarTwin AI Copilot about energy load, fuel runway, vibration, or spare parts..."
+          className="input-control"
+          style={{ flex: 1, fontSize: '0.9rem', padding: '10px 14px' }}
+          value={inputPrompt}
+          onChange={(e) => setInputPrompt(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSend();
+          }}
+        />
+        <button
+          className="btn btn-primary"
+          style={{ padding: '10px 20px' }}
+          onClick={() => handleSend()}
+          disabled={loading || !inputPrompt.trim()}
+        >
+          <Send size={16} /> Send
+        </button>
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,183 @@
+import React, { useState } from 'react';
+import { Alert, Asset } from '../../types';
+import { AlertOctagon, CheckCircle2, ArrowUpRight, ShieldAlert, User, Wrench, Filter, Search } from 'lucide-react';
+
+interface AlertEngineProps {
+  alerts: Alert[];
+  assets: Asset[];
+  onAcknowledgeAlert: (alertId: string) => void;
+  onSelectAsset: (asset: Asset) => void;
+  onCreateWorkOrder: (asset: Asset) => void;
+}
+
+export const AlertEngine: React.FC<AlertEngineProps> = ({
+  alerts,
+  assets,
+  onAcknowledgeAlert,
+  onSelectAsset,
+  onCreateWorkOrder
+}) => {
+  const [filterLevel, setFilterLevel] = useState<string>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const filteredAlerts = alerts.filter(a => {
+    const matchesLevel = filterLevel === 'all' || a.level === filterLevel;
+    const matchesSearch = a.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          a.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          (a.assetId && a.assetId.toLowerCase().includes(searchTerm.toLowerCase()));
+    return matchesLevel && matchesSearch;
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Top Explanation & Filter Banner */}
+      <div className="glass-panel" style={{ padding: '18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertOctagon size={22} color="var(--status-critical)" />
+            <div>
+              <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>
+                PolarTwin Intelligent Operational Risk Alert Engine
+              </h2>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                Multi-sensor correlation algorithm: <code>Risk = P(Failure) × Operational Impact × Asset Criticality</code>
+              </div>
+            </div>
+          </div>
+          <span className="badge badge-critical">
+            {alerts.filter(a => !a.acknowledged).length} UNACKNOWLEDGED ALERTS
+          </span>
+        </div>
+
+        {/* Filters */}
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ flex: 1, minWidth: '240px' }}>
+            <input
+              type="text"
+              placeholder="Search alerts by asset ID, symptom, or title..."
+              className="input-control"
+              style={{ width: '100%' }}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 6 }}>
+            {['all', 'critical', 'warning', 'advisory', 'info'].map(lvl => (
+              <button
+                key={lvl}
+                onClick={() => setFilterLevel(lvl)}
+                className={`btn ${filterLevel === lvl ? 'btn-primary' : 'btn-outline'}`}
+                style={{ padding: '5px 12px', fontSize: '0.72rem', textTransform: 'capitalize' }}
+              >
+                {lvl}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Alert Feed List */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {filteredAlerts.map(alert => {
+          const isCrit = alert.level === 'critical' || alert.level === 'emergency';
+          const isWarn = alert.level === 'warning';
+          const associatedAsset = assets.find(a => a.assetId === alert.assetId);
+
+          return (
+            <div
+              key={alert.alertId}
+              className="glass-panel"
+              style={{
+                padding: '18px',
+                borderLeft: `5px solid ${isCrit ? 'var(--status-critical)' : isWarn ? 'var(--status-warning)' : 'var(--status-info)'}`,
+                background: isCrit ? 'rgba(239, 68, 68, 0.08)' : 'var(--panel-bg)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span className={`badge badge-${isCrit ? 'critical' : isWarn ? 'warning' : 'info'}`}>
+                    {alert.level.toUpperCase()}
+                  </span>
+                  <span className="telemetry-val" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    {alert.alertId} • {alert.stationId} • {alert.timestamp}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="telemetry-val" style={{ fontSize: '0.8rem', color: 'var(--accent-cyan)' }}>
+                    Risk Index: <strong style={{ fontSize: '1rem', color: isCrit ? 'var(--status-critical)' : 'inherit' }}>{alert.riskScore}</strong> / 100
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    (P: {alert.probability} | Imp: {alert.impact} | Crit: {alert.criticality})
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#fff', marginBottom: 4 }}>
+                  {alert.title}
+                </h3>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                  {alert.description}
+                </p>
+              </div>
+
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingTop: 8,
+                borderTop: '1px solid rgba(56, 189, 248, 0.12)',
+                flexWrap: 'wrap',
+                gap: 8
+              }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <User size={13} /> Assigned: <strong style={{ color: '#fff' }}>{alert.assignedTo || 'Unassigned (General Queue)'}</strong>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {!alert.acknowledged ? (
+                    <button
+                      className="btn btn-outline"
+                      style={{ padding: '5px 12px', fontSize: '0.75rem' }}
+                      onClick={() => onAcknowledgeAlert(alert.alertId)}
+                    >
+                      <CheckCircle2 size={13} /> Acknowledge Alert
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: '0.75rem', color: 'var(--status-normal)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <CheckCircle2 size={13} /> Acknowledged
+                    </span>
+                  )}
+
+                  {associatedAsset && (
+                    <>
+                      <button
+                        className="btn btn-cyan"
+                        style={{ padding: '5px 12px', fontSize: '0.75rem' }}
+                        onClick={() => onSelectAsset(associatedAsset)}
+                      >
+                        Inspect in 3D Twin <ArrowUpRight size={13} />
+                      </button>
+                      <button
+                        className="btn btn-primary"
+                        style={{ padding: '5px 12px', fontSize: '0.75rem' }}
+                        onClick={() => onCreateWorkOrder(associatedAsset)}
+                      >
+                        <Wrench size={13} /> Create Work Order
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
