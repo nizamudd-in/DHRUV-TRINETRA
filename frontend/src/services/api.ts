@@ -1,4 +1,4 @@
-import { Station, Asset, Alert, InventoryItem, WorkOrder, SimulationRequest, SimulationResult, CopilotMessage, EdgeStatus } from '../types';
+import { Station, Asset, Alert, InventoryItem, WorkOrder, SimulationRequest, SimulationResult, CopilotMessage, EdgeStatus, ActionDecision, AuditEvent } from '../types';
 
 const API_BASE = '/api';
 
@@ -20,6 +20,9 @@ export const initialStations: Station[] = [
     powerLoadKw: 345.0,
     powerCapacityKw: 600.0,
     batterySoc: 84.0,
+    emergencyActive: false,
+    protectedLoadKw: 241.5,
+    shedLoadKw: 0.0,
     healthBreakdown: { energy: 88.5, equipment: 94.0, logistics: 91.2, environment: 95.0, connectivity: 89.0, operations: 94.5 }
   },
   {
@@ -38,6 +41,9 @@ export const initialStations: Station[] = [
     powerLoadKw: 280.0,
     powerCapacityKw: 450.0,
     batterySoc: 78.5,
+    emergencyActive: false,
+    protectedLoadKw: 196.0,
+    shedLoadKw: 0.0,
     healthBreakdown: { energy: 84.0, equipment: 88.5, logistics: 87.0, environment: 92.0, connectivity: 90.0, operations: 91.0 }
   }
 ];
@@ -108,7 +114,7 @@ export const initialAssets: Asset[] = [
     position3D: [20.0, 1.5, 10.0]
   },
   {
-    assetId: 'RADOME-01', stationId: 'BHARATI', name: 'GSAT-10 Polar Radome Satellite Uplink', type: 'radome',
+    assetId: 'RADOME-01', stationId: 'BHARATI', name: 'Polar Radome Satellite Uplink', type: 'radome',
     building: 'Upper Deck Mast', status: 'normal', healthScore: 95.0, criticality: 'high',
     vibration: 0.4, temperature: 18.0, powerKw: 12.0, runtimeHours: 18400.0,
     lastMaintenance: '2026-07-01', predictedFailureDays: 300, failureRisk: 'Low',
@@ -469,7 +475,7 @@ export const api = {
       return {
         id: Math.random().toString(),
         sender: 'assistant',
-        text: `**PolarTwin Mission Overview:**\n\n• Station Health Index: **92.4%** (Operational)\n• Active Personnel: **24 overwintering team members**\n• Life Support & Heating: **NOMINAL (All zones > +19°C)**\n• Active Alerts: 1 Critical (G-02 Bearing), 1 Warning (Fuel Burn), 1 Advisory (HVAC Zone 3)\n• Satellite Connectivity: **ONLINE via GSAT-10 (Latency: 580 ms)**`,
+        text: `**PolarTwin Mission Overview:**\n\n• Station Health Index: **92.4%** (Operational)\n• Active Personnel: **24 overwintering team members**\n• Life Support & Heating: **NOMINAL (All zones > +19°C)**\n• Active Alerts: 1 Critical (G-02 Bearing), 1 Warning (Fuel Burn), 1 Advisory (HVAC Zone 3)\n• Satellite Connectivity: **ONLINE via SATCOM uplink (Latency: 580 ms)**`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         confidence: 0.95,
         contributingFactors: ['Overwintering conditions in progress', 'All life-support redundancy active'],
@@ -585,5 +591,81 @@ export const api = {
       bh.healthScore = 92.4;
       bh.healthBreakdown.equipment = 94.0;
     }
+  },
+
+  // --- AI Recommendation -> Simulation -> Human Approval -> Action ---
+  // These require the real backend (decisions live server-side as the source of truth);
+  // unlike the calls above there is no meaningful offline fallback for them.
+  async requestRecommendation(stationId: 'BHARATI' | 'MAITRI', assetId: string): Promise<ActionDecision> {
+    const res = await fetch(`${API_BASE}/decisions/recommend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stationId, assetId })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Recommendation request failed' }));
+      throw new Error(err.detail || 'Recommendation request failed');
+    }
+    return await res.json();
+  },
+
+  async requestEmergencyRecommendation(stationId: 'BHARATI' | 'MAITRI'): Promise<ActionDecision> {
+    const res = await fetch(`${API_BASE}/decisions/recommend-emergency`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stationId })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Emergency recommendation request failed' }));
+      throw new Error(err.detail || 'Emergency recommendation request failed');
+    }
+    return await res.json();
+  },
+
+  async simulateDecision(decisionId: string): Promise<ActionDecision> {
+    const res = await fetch(`${API_BASE}/decisions/${decisionId}/simulate`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Simulation failed' }));
+      throw new Error(err.detail || 'Simulation failed');
+    }
+    return await res.json();
+  },
+
+  async approveDecision(decisionId: string, approvedBy: string): Promise<ActionDecision> {
+    const res = await fetch(`${API_BASE}/decisions/${decisionId}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approvedBy })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Approval failed' }));
+      throw new Error(err.detail || 'Approval failed');
+    }
+    return await res.json();
+  },
+
+  async rejectDecision(decisionId: string, rejectedBy: string): Promise<ActionDecision> {
+    const res = await fetch(`${API_BASE}/decisions/${decisionId}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rejectedBy })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Rejection failed' }));
+      throw new Error(err.detail || 'Rejection failed');
+    }
+    return await res.json();
+  },
+
+  async getAudit(stationId?: string, assetId?: string): Promise<AuditEvent[]> {
+    try {
+      const params = new URLSearchParams();
+      if (stationId) params.set('station_id', stationId);
+      if (assetId) params.set('asset_id', assetId);
+      const qs = params.toString();
+      const res = await fetch(`${API_BASE}/audit${qs ? `?${qs}` : ''}`, { signal: AbortSignal.timeout(1500) });
+      if (res.ok) return await res.json();
+    } catch (_) {}
+    return [];
   }
 };

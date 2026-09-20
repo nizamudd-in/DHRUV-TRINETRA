@@ -55,16 +55,16 @@ export const MissionControlDashboard: React.FC<MissionControlDashboardProps> = (
         {/* Overall Health Score Card */}
         <div className="glass-panel metric-card" style={{
           background: 'linear-gradient(135deg, rgba(14, 28, 48, 0.9) 0%, rgba(2, 132, 199, 0.15) 100%)',
-          borderLeft: `4px solid ${station.healthScore > 90 ? 'var(--status-normal)' : 'var(--status-warning)'}`
+          borderLeft: `4px solid ${station.emergencyActive ? 'var(--status-critical)' : station.healthScore > 90 ? 'var(--status-normal)' : 'var(--status-warning)'}`
         }}>
           <div className="metric-label">
             <ShieldAlert size={15} color="var(--accent-cyan)" /> Station Health Index
           </div>
           <div className="metric-value">
-            <span style={{ color: station.healthScore > 90 ? 'var(--status-normal)' : 'var(--status-warning)' }}>
+            <span style={{ color: station.emergencyActive ? 'var(--status-critical)' : station.healthScore > 90 ? 'var(--status-normal)' : 'var(--status-warning)' }}>
               {station.healthScore}%
             </span>
-            <span className="metric-unit">Operational</span>
+            <span className="metric-unit">{station.emergencyActive ? 'EMERGENCY TRIAGE' : 'Operational'}</span>
           </div>
           <div className="metric-sub">
             <span>Energy: {station.healthBreakdown.energy}%</span> • <span>Equip: {station.healthBreakdown.equipment}%</span>
@@ -75,6 +75,7 @@ export const MissionControlDashboard: React.FC<MissionControlDashboardProps> = (
         <div className="glass-panel metric-card">
           <div className="metric-label">
             <Zap size={15} color="var(--status-warning)" /> Station Power Load
+            {station.emergencyActive && <span className="badge badge-critical" style={{ marginLeft: 8, fontSize: '0.6rem' }}>SHED {station.shedLoadKw} kW</span>}
           </div>
           <div className="metric-value">
             {station.powerLoadKw} <span className="metric-unit">kW</span>
@@ -183,7 +184,7 @@ export const MissionControlDashboard: React.FC<MissionControlDashboardProps> = (
                 style={{ padding: '5px 12px', fontSize: '0.75rem' }}
                 onClick={onInjectAnomaly}
               >
-                Trigger G-02 Vibration Anomaly
+                Trigger Generator Vibration Anomaly
               </button>
               <button
                 className="btn btn-outline"
@@ -351,7 +352,7 @@ export const MissionControlDashboard: React.FC<MissionControlDashboardProps> = (
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{asset.type}</div>
                 </td>
                 <td>
-                  <span className={`badge badge-${asset.status === 'critical' ? 'critical' : asset.status === 'warning' ? 'warning' : 'normal'}`}>
+                  <span className={`badge badge-${asset.status === 'offline' ? 'offline' : asset.status === 'critical' ? 'critical' : asset.status === 'warning' ? 'warning' : 'normal'}`}>
                     {asset.status}
                   </span>
                 </td>

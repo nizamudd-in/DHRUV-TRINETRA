@@ -23,7 +23,7 @@ export const EnergyManagement: React.FC<EnergyManagementProps> = ({ station }) =
     { name: 'Polar Science Labs & Incubators', loadKw: 68.0, pct: 19.7, critical: false },
     { name: 'Seawater Desalination RO & Sewage', loadKw: 42.0, pct: 12.2, critical: true },
     { name: 'Galley, Food Cold Storage & Living', loadKw: 38.0, pct: 11.0, critical: true },
-    { name: 'GSAT-10 Radome & Telecommunications', loadKw: 18.0, pct: 5.2, critical: true },
+    { name: 'SATCOM Radome & Telecommunications', loadKw: 18.0, pct: 5.2, critical: true },
     { name: 'Lithium BESS Smart Charging Loop', loadKw: 14.0, pct: 4.1, critical: false },
   ];
 

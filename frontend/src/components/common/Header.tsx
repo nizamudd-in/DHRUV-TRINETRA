@@ -153,7 +153,7 @@ export const Header: React.FC<HeaderProps> = ({
           {edgeStatus.is_online ? (
             <>
               <Wifi size={15} color="var(--status-normal)" />
-              <span>GSAT-10: <strong style={{ color: 'var(--status-normal)' }}>ONLINE</strong></span>
+              <span>SATCOM: <strong style={{ color: 'var(--status-normal)' }}>ONLINE</strong></span>
             </>
           ) : (
             <>
@@ -189,9 +189,12 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           onClick={onOpenEmergency}
           className="btn btn-danger"
-          style={{ padding: '6px 14px', fontSize: '0.78rem', fontWeight: 700 }}
+          style={{
+            padding: '6px 14px', fontSize: '0.78rem', fontWeight: 700,
+            animation: currentStation.emergencyActive ? 'pulse-critical 2s infinite ease-in-out' : undefined
+          }}
         >
-          <AlertTriangle size={15} /> EMERGENCY
+          <AlertTriangle size={15} /> {currentStation.emergencyActive ? 'EMERGENCY ACTIVE' : 'EMERGENCY'}
         </button>
       </div>
     </header>

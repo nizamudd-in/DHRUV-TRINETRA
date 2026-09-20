@@ -24,6 +24,10 @@ export interface Station {
   powerLoadKw: number;
   powerCapacityKw: number;
   batterySoc: number;
+  emergencyActive: boolean;
+  protectedLoadKw: number;
+  shedLoadKw: number;
+  emergencyStrategy?: string | null;
 }
 
 export interface Asset {
@@ -112,6 +116,11 @@ export interface SimulationResult {
   riskLevel: 'LOW' | 'MEDIUM' | 'CRITICAL';
   criticalLoadsAffected: string[];
   mitigationStrategy: string[];
+  // Populated only by load-shedding style scenarios (e.g. emergency triage)
+  protectedLoadKw?: number;
+  shedLoadKw?: number;
+  projectedBatterySoc?: number;
+  standbyGeneratorId?: string | null;
 }
 
 export interface CopilotMessage {
@@ -123,6 +132,50 @@ export interface CopilotMessage {
   contributingFactors?: string[];
   recommendedActions?: string[];
   suggestedFollowups?: string[];
+}
+
+export interface ActionDecision {
+  id: string;
+  stationId: 'BHARATI' | 'MAITRI';
+  assetId?: string | null;  // null/absent for station-level decisions (e.g. emergency triage)
+  trigger: string;
+  detectedIssue: string;
+  risk: 'Low' | 'Medium' | 'High' | 'Critical';
+  explanation: string;
+  recommendation: string;
+  proposedAction: 'NONE' | 'OFFLINE_FOR_MAINTENANCE' | 'SCHEDULE_MAINTENANCE' | 'EMERGENCY_TRIAGE';
+  expectedImpact: string;
+  requiredApproval: string;
+  simulationRequest?: SimulationRequest;
+  simulationResult?: SimulationResult;
+  approvalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXECUTED';
+  approvedBy?: string;
+  executedAt?: string;
+  actionResult?: {
+    assetStatus?: string;
+    backupActivated?: string | null;
+    standbyActivated?: string | null;
+    workOrderId?: string;
+    emergencyActive?: boolean;
+    loadKw?: number;
+    shedLoadKw?: number;
+    protectedLoadKw?: number;
+    batterySoc?: number;
+    previousState?: Record<string, any>;
+    resultingState?: Record<string, any>;
+  };
+  createdAt: string;
+}
+
+export interface AuditEvent {
+  timestamp: string;
+  stationId: string;
+  assetId?: string | null;
+  action: string;
+  actor: string;
+  decisionId?: string;
+  result?: string;
+  detail?: Record<string, any> | null;
 }
 
 export interface EdgeStatus {

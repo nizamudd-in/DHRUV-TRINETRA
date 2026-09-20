@@ -54,6 +54,7 @@ export const EquipmentHealth: React.FC<EquipmentHealthProps> = ({
               <option value="normal">Normal</option>
               <option value="warning">Warning</option>
               <option value="critical">Critical</option>
+              <option value="offline">Offline</option>
             </select>
           </div>
 
@@ -106,12 +107,13 @@ export const EquipmentHealth: React.FC<EquipmentHealthProps> = ({
             {filteredAssets.map(asset => {
               const isCrit = asset.status === 'critical' || asset.healthScore < 70;
               const isWarn = asset.status === 'warning';
+              const isOff = asset.status === 'offline';
 
               return (
                 <tr
                   key={asset.assetId}
                   style={{
-                    background: isCrit ? 'rgba(239, 68, 68, 0.05)' : isWarn ? 'rgba(245, 158, 11, 0.03)' : 'transparent',
+                    background: isOff ? 'rgba(100, 116, 139, 0.06)' : isCrit ? 'rgba(239, 68, 68, 0.05)' : isWarn ? 'rgba(245, 158, 11, 0.03)' : 'transparent',
                     cursor: 'pointer'
                   }}
                   onClick={() => onSelectAsset(asset)}
@@ -129,7 +131,7 @@ export const EquipmentHealth: React.FC<EquipmentHealthProps> = ({
                     </div>
                   </td>
                   <td>
-                    <span className={`badge badge-${isCrit ? 'critical' : isWarn ? 'warning' : 'normal'}`}>
+                    <span className={`badge badge-${isOff ? 'offline' : isCrit ? 'critical' : isWarn ? 'warning' : 'normal'}`}>
                       {asset.status}
                     </span>
                   </td>

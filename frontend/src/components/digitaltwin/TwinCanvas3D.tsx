@@ -137,7 +137,8 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
 
       // Status indicator ring on top
       let ringColor = 0x10b981; // normal
-      if (asset.status === 'critical' || asset.healthScore < 70) ringColor = 0xef4444;
+      if (asset.status === 'offline') ringColor = 0x64748b;
+      else if (asset.status === 'critical' || asset.healthScore < 70) ringColor = 0xef4444;
       else if (asset.status === 'warning') ringColor = 0xf59e0b;
 
       const ringGeo = new THREE.RingGeometry(0.7, 0.9, 24);
@@ -230,7 +231,7 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
       }
       const gen2 = assets.find(a => a.assetId === 'GEN-02');
       if (gen2) {
-        createAssetMesh(gen2, new THREE.BoxGeometry(2.5, 2, 2), gen2.status === 'critical' ? 0xef4444 : 0xf59e0b, [-9, 3.5, -2]);
+        createAssetMesh(gen2, new THREE.BoxGeometry(2.5, 2, 2), gen2.status === 'offline' ? 0x64748b : gen2.status === 'critical' ? 0xef4444 : gen2.status === 'warning' ? 0xf59e0b : 0x38bdf8, [-9, 3.5, -2]);
       }
 
       // Fuel Tank Depot
@@ -603,7 +604,7 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
             </div>
           </div>
           <div style={{ borderLeft: '1px solid var(--panel-border)', paddingLeft: 12 }}>
-            <span className={`badge badge-${hoveredAsset.status === 'critical' ? 'critical' : hoveredAsset.status === 'warning' ? 'warning' : 'normal'}`}>
+            <span className={`badge badge-${hoveredAsset.status === 'offline' ? 'offline' : hoveredAsset.status === 'critical' ? 'critical' : hoveredAsset.status === 'warning' ? 'warning' : 'normal'}`}>
               {hoveredAsset.status.toUpperCase()}
             </span>
           </div>

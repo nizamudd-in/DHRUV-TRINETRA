@@ -8,7 +8,8 @@ from pydantic import BaseModel
 
 from .models import (
     Station, Asset, Alert, InventoryItem, WorkOrder,
-    SimulationRequest, SimulationResult, CopilotQuery, CopilotResponse
+    SimulationRequest, SimulationResult, CopilotQuery, CopilotResponse,
+    ActionDecision, RecommendationRequest, ApprovalRequest, RejectionRequest, StationRequest
 )
 from .simulator import simulator
 from .ai_engine import ai_engine
@@ -217,26 +218,77 @@ class CreateWorkOrderReq(BaseModel):
 
 @app.post("/api/workorders")
 def create_work_order(req: CreateWorkOrderReq):
-    new_wo = WorkOrder(
-        orderId=f"WO-2026-{random.randint(100, 999)}",
-        stationId=req.stationId,
-        assetId=req.assetId,
-        title=req.title,
-        priority=req.priority,
-        status="detected",
-        assignedTechnician=req.assignedTechnician,
-        estimatedHours=req.estimatedHours,
-        requiredSpares=req.requiredSpares,
-        checklist=[
-            {"item": "Review safety guidelines and issue thermal outer gear", "done": False},
-            {"item": "Verify isolation and lock-out/tag-out on target asset", "done": False},
-            {"item": "Perform mechanical/electrical maintenance procedures", "done": False},
-            {"item": "Test run asset for 30 minutes and capture vibration spectra", "done": False}
-        ],
-        createdAt="Just now"
+    return simulator.create_work_order(
+        station_id=req.stationId, asset_id=req.assetId, title=req.title,
+        priority=req.priority, assigned_technician=req.assignedTechnician,
+        estimated_hours=req.estimatedHours, required_spares=req.requiredSpares
     )
-    simulator.work_orders.insert(0, new_wo)
-    return new_wo
+
+# --- AI Recommendation -> Simulation -> Human Approval -> Action Decisions ---
+@app.post("/api/decisions/recommend", response_model=ActionDecision)
+def recommend_decision(req: RecommendationRequest):
+    try:
+        return ai_engine.generate_recommendation(req.stationId, req.assetId)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/api/decisions/recommend-emergency", response_model=ActionDecision)
+def recommend_emergency_decision(req: StationRequest):
+    try:
+        return ai_engine.generate_emergency_recommendation(req.stationId)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.get("/api/decisions", response_model=List[ActionDecision])
+def list_decisions(station_id: Optional[str] = None, asset_id: Optional[str] = None):
+    items = list(simulator.decisions.values())
+    if station_id:
+        items = [d for d in items if d.stationId == station_id.upper()]
+    if asset_id:
+        items = [d for d in items if d.assetId == asset_id.upper()]
+    return items
+
+@app.get("/api/decisions/{decision_id}", response_model=ActionDecision)
+def get_decision(decision_id: str):
+    dec = simulator.decisions.get(decision_id)
+    if not dec:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return dec
+
+@app.post("/api/decisions/{decision_id}/simulate", response_model=ActionDecision)
+def simulate_decision(decision_id: str):
+    try:
+        return ai_engine.simulate_decision(decision_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/decisions/{decision_id}/approve", response_model=ActionDecision)
+def approve_decision(decision_id: str, req: ApprovalRequest):
+    try:
+        return ai_engine.approve_decision(decision_id, req.approvedBy)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/decisions/{decision_id}/reject", response_model=ActionDecision)
+def reject_decision(decision_id: str, req: RejectionRequest):
+    try:
+        return ai_engine.reject_decision(decision_id, req.rejectedBy)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# --- Lightweight Prototype Audit Trail ---
+@app.get("/api/audit")
+def get_audit(station_id: Optional[str] = None, asset_id: Optional[str] = None):
+    items = simulator.audit_log
+    if station_id:
+        sid = station_id.upper()
+        items = [e for e in items if e["stationId"] == sid]
+    if asset_id:
+        aid = asset_id.upper()
+        items = [e for e in items if e.get("assetId") == aid]
+    return items
 
 # --- Simulation Endpoint ---
 @app.post("/api/simulation/run", response_model=SimulationResult)

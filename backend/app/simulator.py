@@ -2,8 +2,8 @@ import math
 import time
 import random
 from datetime import datetime, timezone
-from typing import Dict, List, Any
-from .models import Station, Asset, Alert, InventoryItem, WorkOrder, StationHealthBreakdown
+from typing import Dict, List, Any, Optional
+from .models import Station, Asset, Alert, InventoryItem, WorkOrder, StationHealthBreakdown, ActionDecision
 
 class PolarTwinSimulator:
     def __init__(self):
@@ -24,6 +24,7 @@ class PolarTwinSimulator:
                 powerLoadKw=345.0,
                 powerCapacityKw=600.0,
                 batterySoc=84.0,
+                protectedLoadKw=241.5,  # ~70% of load: life support, water, comms
                 healthBreakdown=StationHealthBreakdown(
                     energy=88.5, equipment=94.0, logistics=91.2, environment=95.0, connectivity=89.0, operations=94.5
                 )
@@ -44,6 +45,7 @@ class PolarTwinSimulator:
                 powerLoadKw=280.0,
                 powerCapacityKw=450.0,
                 batterySoc=78.5,
+                protectedLoadKw=196.0,  # ~70% of load: life support, water, comms
                 healthBreakdown=StationHealthBreakdown(
                     energy=84.0, equipment=88.5, logistics=87.0, environment=92.0, connectivity=90.0, operations=91.0
                 )
@@ -118,7 +120,7 @@ class PolarTwinSimulator:
                     position3D=[20.0, 1.5, 10.0]
                 ),
                 Asset(
-                    assetId="RADOME-01", stationId="BHARATI", name="GSAT-10 Polar Radome Satellite Uplink", type="radome",
+                    assetId="RADOME-01", stationId="BHARATI", name="Polar Radome Satellite Uplink", type="radome",
                     building="Upper Deck Mast", status="normal", healthScore=95.0, criticality="high",
                     vibration=0.4, temperature=18.0, powerKw=12.0, runtimeHours=18400.0,
                     lastMaintenance="2026-07-01", predictedFailureDays=300, failureRisk="Low",
@@ -306,6 +308,71 @@ class PolarTwinSimulator:
         self.sync_queue: List[Dict[str, Any]] = []
         self.is_satellite_online: bool = True
 
+        # AI Recommendation -> Simulation -> Approval -> Action decisions, keyed by decision id
+        self.decisions: Dict[str, ActionDecision] = {}
+        # decisionId -> orderId, so a demo reset can clean up only what a decision itself created
+        self.decision_workorders: Dict[str, str] = {}
+        # Lightweight prototype audit trail (newest first)
+        self.audit_log: List[Dict[str, Any]] = []
+
+        # Baseline snapshots so demo reset can restore ANY asset/station accurately,
+        # not just the originally-hardcoded GEN-02/BHARATI scenario.
+        self._asset_baselines: Dict[str, Dict[str, Any]] = {}
+        for _st_id, _asset_list in self.assets.items():
+            for _a in _asset_list:
+                self._asset_baselines[_a.assetId] = {
+                    "vibration": _a.vibration, "temperature": _a.temperature, "healthScore": _a.healthScore,
+                    "status": _a.status, "failureRisk": _a.failureRisk, "predictedFailureDays": _a.predictedFailureDays,
+                    "recommendedAction": _a.recommendedAction, "powerKw": _a.powerKw
+                }
+        self._station_baselines: Dict[str, Dict[str, Any]] = {}
+        for _st_id, _st in self.stations.items():
+            self._station_baselines[_st_id] = {
+                "healthScore": _st.healthScore, "status": _st.status,
+                "equipment": _st.healthBreakdown.equipment, "energy": _st.healthBreakdown.energy,
+                "powerLoadKw": _st.powerLoadKw, "batterySoc": _st.batterySoc,
+                "protectedLoadKw": _st.protectedLoadKw, "shedLoadKw": _st.shedLoadKw,
+                "emergencyActive": _st.emergencyActive, "emergencyStrategy": _st.emergencyStrategy
+            }
+
+    def log_audit(self, station_id: str, asset_id: Optional[str], action: str, actor: str,
+                   decision_id: Optional[str] = None, result: Optional[str] = None,
+                   detail: Optional[Dict[str, Any]] = None) -> None:
+        self.audit_log.insert(0, {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stationId": station_id,
+            "assetId": asset_id,
+            "action": action,
+            "actor": actor,
+            "decisionId": decision_id,
+            "result": result,
+            "detail": detail
+        })
+        self.audit_log = self.audit_log[:100]
+
+    def create_work_order(self, station_id: str, asset_id: str, title: str, priority: str,
+                           assigned_technician: str, estimated_hours: float, required_spares: List[str]) -> WorkOrder:
+        wo = WorkOrder(
+            orderId=f"WO-2026-{random.randint(100, 999)}",
+            stationId=station_id,
+            assetId=asset_id,
+            title=title,
+            priority=priority,
+            status="detected",
+            assignedTechnician=assigned_technician,
+            estimatedHours=estimated_hours,
+            requiredSpares=required_spares,
+            checklist=[
+                {"item": "Review safety guidelines and issue thermal outer gear", "done": False},
+                {"item": "Verify isolation and lock-out/tag-out on target asset", "done": False},
+                {"item": "Perform mechanical/electrical maintenance procedures", "done": False},
+                {"item": "Test run asset for 30 minutes and capture vibration spectra", "done": False}
+            ],
+            createdAt="Just now"
+        )
+        self.work_orders.insert(0, wo)
+        return wo
+
     def toggle_satellite_connection(self, online: bool) -> Dict[str, Any]:
         self.is_satellite_online = online
         status = "ONLINE" if online else "OFFLINE"
@@ -368,6 +435,13 @@ class PolarTwinSimulator:
             self.stations[target_station].healthBreakdown.equipment = 72.0
             self.stations[target_station].healthBreakdown.energy = 78.0
 
+            self.log_audit(
+                target_station, target_asset.assetId,
+                f"{target_asset.assetId} anomaly detected — vibration {target_asset.vibration:.2f} mm/s, "
+                f"temperature {target_asset.temperature:.1f}°C",
+                "SYSTEM", result="ALERT_CREATED"
+            )
+
             # If offline, queue event
             if not self.is_satellite_online:
                 self.sync_queue.append({
@@ -387,19 +461,67 @@ class PolarTwinSimulator:
         return {"success": True}
 
     def reset_anomaly(self, asset_id: str) -> Dict[str, Any]:
-        """Resets asset to normal state"""
+        """Resets asset (and any decision/simulation/approval/work-order state derived from it) to baseline."""
         for st_id, assets in self.assets.items():
             for a in assets:
                 if a.assetId == asset_id:
-                    a.vibration = 1.3
-                    a.temperature = 58.0
-                    a.healthScore = 93.5
-                    a.status = "normal"
-                    a.failureRisk = "Low"
-                    a.predictedFailureDays = 160
-                    a.recommendedAction = "Routine inspection at scheduled window"
-                    self.stations[st_id].healthScore = 92.4
-                    self.stations[st_id].healthBreakdown.equipment = 94.0
+                    baseline = self._asset_baselines.get(asset_id, {})
+                    a.vibration = baseline.get("vibration", a.vibration)
+                    a.temperature = baseline.get("temperature", a.temperature)
+                    a.healthScore = baseline.get("healthScore", a.healthScore)
+                    a.status = baseline.get("status", "normal")
+                    a.failureRisk = baseline.get("failureRisk", "Low")
+                    a.predictedFailureDays = baseline.get("predictedFailureDays", a.predictedFailureDays)
+                    a.recommendedAction = baseline.get("recommendedAction", a.recommendedAction)
+                    a.powerKw = baseline.get("powerKw", a.powerKw)
+
+                    st_baseline = self._station_baselines.get(st_id, {})
+                    station = self.stations[st_id]
+                    station.healthScore = st_baseline.get("healthScore", station.healthScore)
+                    station.status = st_baseline.get("status", "operational")
+                    station.healthBreakdown.equipment = st_baseline.get("equipment", station.healthBreakdown.equipment)
+                    station.healthBreakdown.energy = st_baseline.get("energy", station.healthBreakdown.energy)
+                    # Restore energy/emergency state too — a per-asset reset also resets that asset's
+                    # station back to its full demo baseline (there is one reset scope per station in this prototype).
+                    station.powerLoadKw = st_baseline.get("powerLoadKw", station.powerLoadKw)
+                    station.batterySoc = st_baseline.get("batterySoc", station.batterySoc)
+                    station.protectedLoadKw = st_baseline.get("protectedLoadKw", station.protectedLoadKw)
+                    station.shedLoadKw = st_baseline.get("shedLoadKw", 0.0)
+                    station.emergencyActive = st_baseline.get("emergencyActive", False)
+                    station.emergencyStrategy = st_baseline.get("emergencyStrategy", None)
+
+                    # Remove work orders that were created by an approved decision on this asset
+                    # (leaves any pre-seeded/manually-created work orders untouched)
+                    for dec_id, order_id in list(self.decision_workorders.items()):
+                        dec = self.decisions.get(dec_id)
+                        if dec and dec.assetId == asset_id:
+                            self.work_orders = [w for w in self.work_orders if w.orderId != order_id]
+                            del self.decision_workorders[dec_id]
+
+                    # Revert any standby generator activated to cover this asset's outage OR
+                    # activated as part of an emergency triage response at this station
+                    for other in assets:
+                        if (other.assetId != asset_id and other.type == "generator"
+                                and other.recommendedAction.startswith("Activated as standby")):
+                            other_baseline = self._asset_baselines.get(other.assetId, {})
+                            other.powerKw = other_baseline.get("powerKw", 0.0)
+                            other.recommendedAction = other_baseline.get("recommendedAction", other.recommendedAction)
+                            other.status = other_baseline.get("status", other.status)
+
+                    # Remove the emergency-engaged alert raised for this station, if any
+                    self.alerts = [
+                        al for al in self.alerts
+                        if not (al.stationId == st_id and al.title.startswith("Emergency Triage Engaged"))
+                    ]
+
+                    # Clear any decisions tied to this asset, plus any station-level (asset-less)
+                    # emergency triage decisions for this station
+                    self.decisions = {
+                        k: v for k, v in self.decisions.items()
+                        if v.assetId != asset_id and not (v.assetId is None and v.stationId == st_id)
+                    }
+
+                    self.log_audit(st_id, asset_id, f"{asset_id} restored to baseline (demo reset)", "SYSTEM", result="RESET")
                     return {"success": True, "asset": a}
         return {"error": "Asset not found"}
 

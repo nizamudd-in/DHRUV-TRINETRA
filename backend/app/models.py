@@ -27,6 +27,10 @@ class Station(BaseModel):
     powerLoadKw: float = 345.0
     powerCapacityKw: float = 600.0
     batterySoc: float = 84.0
+    emergencyActive: bool = False
+    protectedLoadKw: float = 0.0
+    shedLoadKw: float = 0.0
+    emergencyStrategy: Optional[str] = None  # e.g. SELECTIVE_LOAD_SHED
 
 class TelemetryReading(BaseModel):
     assetId: str
@@ -121,6 +125,11 @@ class SimulationResult(BaseModel):
     riskLevel: str
     criticalLoadsAffected: List[str]
     mitigationStrategy: List[str]
+    # Optional fields populated only by load-shedding style scenarios (e.g. emergency triage)
+    protectedLoadKw: Optional[float] = None
+    shedLoadKw: Optional[float] = None
+    projectedBatterySoc: Optional[float] = None
+    standbyGeneratorId: Optional[str] = None
 
 class CopilotQuery(BaseModel):
     prompt: str
@@ -133,6 +142,39 @@ class CopilotResponse(BaseModel):
     contributingFactors: List[str]
     recommendedActions: List[str]
     suggestedFollowups: List[str]
+
+class ActionDecision(BaseModel):
+    id: str
+    stationId: str
+    assetId: Optional[str] = None  # None for station-level decisions (e.g. emergency triage)
+    trigger: str
+    detectedIssue: str
+    risk: str  # Low, Medium, High, Critical
+    explanation: str
+    recommendation: str
+    proposedAction: str  # NONE, OFFLINE_FOR_MAINTENANCE, SCHEDULE_MAINTENANCE, EMERGENCY_TRIAGE
+    expectedImpact: str
+    requiredApproval: str  # role name, "" if no approval needed
+    simulationRequest: Optional[SimulationRequest] = None
+    simulationResult: Optional[SimulationResult] = None
+    approvalStatus: str = "PENDING"  # PENDING, APPROVED, REJECTED, EXECUTED
+    approvedBy: Optional[str] = None
+    executedAt: Optional[str] = None
+    actionResult: Optional[Dict[str, Any]] = None
+    createdAt: str
+
+class RecommendationRequest(BaseModel):
+    stationId: str
+    assetId: str
+
+class StationRequest(BaseModel):
+    stationId: str
+
+class ApprovalRequest(BaseModel):
+    approvedBy: str
+
+class RejectionRequest(BaseModel):
+    rejectedBy: str
 
 class SyncEvent(BaseModel):
     eventId: str

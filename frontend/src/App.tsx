@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ActiveTab, Station, Asset, Alert, InventoryItem, WorkOrder, EdgeStatus } from './types';
+import { ActiveTab, Station, Asset, Alert, InventoryItem, WorkOrder, EdgeStatus, ActionDecision } from './types';
 import { api, initialStations, initialAssets, initialAlerts, initialInventory, initialWorkOrders } from './services/api';
 import { Header } from './components/common/Header';
 import { Sidebar } from './components/common/Sidebar';
@@ -28,6 +28,15 @@ export const App: React.FC = () => {
   const [inventory, setInventory] = useState<InventoryItem[]>(initialInventory);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>(initialWorkOrders);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [activeDecision, setActiveDecision] = useState<ActionDecision | null>(null);
+  const [decisionLoading, setDecisionLoading] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [demoAnomalyAssetId, setDemoAnomalyAssetId] = useState<string | null>(null);
+  // Kept separate from activeDecision above: the Emergency modal and the asset drawer can
+  // both be open independently, and must not stomp on each other's in-progress decision.
+  const [activeEmergencyDecision, setActiveEmergencyDecision] = useState<ActionDecision | null>(null);
+  const [emergencyDecisionLoading, setEmergencyDecisionLoading] = useState(false);
+  const [emergencyDecisionError, setEmergencyDecisionError] = useState<string | null>(null);
   const [edgeStatus, setEdgeStatus] = useState<EdgeStatus>({
     is_online: true,
     status: 'ONLINE',
@@ -109,9 +118,22 @@ export const App: React.FC = () => {
     setEdgeStatus(res);
   };
 
+  // Resolve which generator the demo anomaly controller targets for the active station,
+  // dynamically (never a hardcoded 'GEN-02'/'M-GEN-01' literal) — prefers whichever
+  // generator is already flagged warning/critical, falling back to the station's first generator.
+  const resolveAnomalyAssetId = (): string => {
+    const atRisk = stationAssets.find(a => a.type === 'generator' && (a.status === 'warning' || a.status === 'critical'));
+    if (atRisk) return atRisk.assetId;
+    const anyGen = stationAssets.find(a => a.type === 'generator');
+    return anyGen ? anyGen.assetId : (stationAssets[0]?.assetId || '');
+  };
+
   // Anomaly Injection
   const handleInjectAnomaly = async () => {
-    await api.injectAnomaly('GEN-02');
+    const targetId = resolveAnomalyAssetId();
+    if (!targetId) return;
+    setDemoAnomalyAssetId(targetId);
+    await api.injectAnomaly(targetId);
     const [asts, alts, sts] = await Promise.all([
       api.getAssets(),
       api.getAlerts(),
@@ -120,20 +142,181 @@ export const App: React.FC = () => {
     setAssets(asts);
     setAlerts(alts);
     setStations(sts);
-    const g2 = asts.find(a => a.assetId === 'GEN-02');
-    if (g2) setSelectedAsset(g2);
+    const target = asts.find(a => a.assetId === targetId);
+    if (target) handleSelectAsset(target);
   };
 
   const handleResetAnomaly = async () => {
-    await api.resetAnomaly('GEN-02');
-    const [asts, alts, sts] = await Promise.all([
+    const targetId = demoAnomalyAssetId || resolveAnomalyAssetId();
+    if (!targetId) return;
+    await api.resetAnomaly(targetId);
+    const [asts, alts, sts, wos] = await Promise.all([
       api.getAssets(),
       api.getAlerts(),
-      api.getStations()
+      api.getStations(),
+      api.getWorkOrders()
     ]);
     setAssets(asts);
     setAlerts(alts);
     setStations(sts);
+    setWorkOrders(wos);
+    if (activeDecision && activeDecision.assetId === targetId) {
+      setActiveDecision(null);
+      setDecisionError(null);
+    }
+    setDemoAnomalyAssetId(null);
+  };
+
+  // Asset selection: switching to a different asset invalidates any decision panel in view
+  const handleSelectAsset = (asset: Asset) => {
+    setSelectedAsset(asset);
+    setActiveDecision(prev => (prev && prev.assetId === asset.assetId ? prev : null));
+    setDecisionError(null);
+  };
+
+  const handleCloseAssetDrawer = () => {
+    setSelectedAsset(null);
+    setActiveDecision(null);
+    setDecisionError(null);
+  };
+
+  // AI Recommendation -> Simulation -> Human Approval -> Action
+  const handleRequestRecommendation = async (asset: Asset) => {
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const dec = await api.requestRecommendation(asset.stationId, asset.assetId);
+      setActiveDecision(dec);
+    } catch (e: any) {
+      setDecisionError(e?.message || 'Failed to reach AI recommendation service.');
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  const handleRunDecisionSimulation = async () => {
+    if (!activeDecision) return;
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const dec = await api.simulateDecision(activeDecision.id);
+      setActiveDecision(dec);
+    } catch (e: any) {
+      setDecisionError(e?.message || 'Simulation failed.');
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  const handleApproveDecision = async () => {
+    if (!activeDecision) return;
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const dec = await api.approveDecision(activeDecision.id, activeRole);
+      setActiveDecision(dec);
+      const [asts, alts, sts, wos] = await Promise.all([
+        api.getAssets(),
+        api.getAlerts(),
+        api.getStations(),
+        api.getWorkOrders()
+      ]);
+      setAssets(asts);
+      setAlerts(alts);
+      setStations(sts);
+      setWorkOrders(wos);
+      const updatedAsset = asts.find(a => a.assetId === dec.assetId);
+      if (updatedAsset) setSelectedAsset(updatedAsset);
+    } catch (e: any) {
+      setDecisionError(e?.message || 'Approval failed.');
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  const handleRejectDecision = async () => {
+    if (!activeDecision) return;
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const dec = await api.rejectDecision(activeDecision.id, activeRole);
+      setActiveDecision(dec);
+    } catch (e: any) {
+      setDecisionError(e?.message || 'Rejection failed.');
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  // Emergency Triage: AI Recommendation -> Simulation -> Human Approval -> Action
+  // (same decision/approval architecture as above, kept in a separate state slot — see note above)
+  const handleRequestEmergencyRecommendation = async () => {
+    setEmergencyDecisionLoading(true);
+    setEmergencyDecisionError(null);
+    try {
+      const dec = await api.requestEmergencyRecommendation(activeStationId);
+      setActiveEmergencyDecision(dec);
+    } catch (e: any) {
+      setEmergencyDecisionError(e?.message || 'Failed to reach AI recommendation service.');
+    } finally {
+      setEmergencyDecisionLoading(false);
+    }
+  };
+
+  const handleRunEmergencyDecisionSimulation = async () => {
+    if (!activeEmergencyDecision) return;
+    setEmergencyDecisionLoading(true);
+    setEmergencyDecisionError(null);
+    try {
+      const dec = await api.simulateDecision(activeEmergencyDecision.id);
+      setActiveEmergencyDecision(dec);
+    } catch (e: any) {
+      setEmergencyDecisionError(e?.message || 'Simulation failed.');
+    } finally {
+      setEmergencyDecisionLoading(false);
+    }
+  };
+
+  const handleApproveEmergencyDecision = async () => {
+    if (!activeEmergencyDecision) return;
+    setEmergencyDecisionLoading(true);
+    setEmergencyDecisionError(null);
+    try {
+      const dec = await api.approveDecision(activeEmergencyDecision.id, activeRole);
+      setActiveEmergencyDecision(dec);
+      const [asts, alts, sts] = await Promise.all([
+        api.getAssets(),
+        api.getAlerts(),
+        api.getStations()
+      ]);
+      setAssets(asts);
+      setAlerts(alts);
+      setStations(sts);
+    } catch (e: any) {
+      setEmergencyDecisionError(e?.message || 'Approval failed.');
+    } finally {
+      setEmergencyDecisionLoading(false);
+    }
+  };
+
+  const handleRejectEmergencyDecision = async () => {
+    if (!activeEmergencyDecision) return;
+    setEmergencyDecisionLoading(true);
+    setEmergencyDecisionError(null);
+    try {
+      const dec = await api.rejectDecision(activeEmergencyDecision.id, activeRole);
+      setActiveEmergencyDecision(dec);
+    } catch (e: any) {
+      setEmergencyDecisionError(e?.message || 'Rejection failed.');
+    } finally {
+      setEmergencyDecisionLoading(false);
+    }
+  };
+
+  const handleCloseEmergencyModal = () => {
+    setShowEmergencyModal(false);
+    setActiveEmergencyDecision(null);
+    setEmergencyDecisionError(null);
   };
 
   // Acknowledge Alert
@@ -150,7 +333,7 @@ export const App: React.FC = () => {
     });
     setWorkOrders(prev => [newWo, ...prev]);
     setActiveTab('maintenance');
-    if (selectedAsset) setSelectedAsset(null);
+    if (selectedAsset) handleCloseAssetDrawer();
   };
 
   // Update Work Order Status
@@ -204,7 +387,7 @@ export const App: React.FC = () => {
               alerts={stationAlerts}
               inventory={stationInventory}
               onNavigateTab={setActiveTab}
-              onSelectAsset={setSelectedAsset}
+              onSelectAsset={handleSelectAsset}
               onAcknowledgeAlert={handleAcknowledgeAlert}
               onInjectAnomaly={handleInjectAnomaly}
               onResetAnomaly={handleResetAnomaly}
@@ -228,7 +411,7 @@ export const App: React.FC = () => {
                     style={{ padding: '6px 12px', fontSize: '0.75rem' }}
                     onClick={handleInjectAnomaly}
                   >
-                    Inject G-02 Anomaly
+                    Inject Generator Anomaly
                   </button>
                   <button
                     className="btn btn-outline"
@@ -245,7 +428,7 @@ export const App: React.FC = () => {
                   stationId={currentStation.stationId}
                   assets={stationAssets}
                   selectedAsset={selectedAsset}
-                  onSelectAsset={setSelectedAsset}
+                  onSelectAsset={handleSelectAsset}
                   thermalOverlay={thermalOverlay}
                   vibrationOverlay={vibrationOverlay}
                   onToggleThermal={() => setThermalOverlay(prev => !prev)}
@@ -262,9 +445,9 @@ export const App: React.FC = () => {
           {activeTab === 'equipment' && (
             <EquipmentHealth
               assets={stationAssets}
-              onSelectAsset={setSelectedAsset}
+              onSelectAsset={handleSelectAsset}
               onCreateWorkOrder={(a) => {
-                setSelectedAsset(null);
+                handleCloseAssetDrawer();
                 handleCreateWorkOrder({ assetId: a.assetId, title: `Corrective Maintenance for ${a.name}` });
               }}
             />
@@ -283,7 +466,7 @@ export const App: React.FC = () => {
               alerts={stationAlerts}
               assets={stationAssets}
               onAcknowledgeAlert={handleAcknowledgeAlert}
-              onSelectAsset={setSelectedAsset}
+              onSelectAsset={handleSelectAsset}
               onCreateWorkOrder={(a) => {
                 handleCreateWorkOrder({ assetId: a.assetId, title: `Resolution for Alert on ${a.name}` });
               }}
@@ -322,11 +505,20 @@ export const App: React.FC = () => {
       {selectedAsset && (
         <AssetDetailDrawer
           asset={selectedAsset}
-          onClose={() => setSelectedAsset(null)}
+          onClose={handleCloseAssetDrawer}
           onCreateWorkOrder={(a) => {
-            setSelectedAsset(null);
+            handleCloseAssetDrawer();
             handleCreateWorkOrder({ assetId: a.assetId, title: `Overhaul & Inspection of ${a.name}` });
           }}
+          activeRole={activeRole}
+          decision={activeDecision}
+          decisionLoading={decisionLoading}
+          decisionError={decisionError}
+          onRequestRecommendation={() => handleRequestRecommendation(selectedAsset)}
+          onRunSimulation={handleRunDecisionSimulation}
+          onApproveDecision={handleApproveDecision}
+          onRejectDecision={handleRejectDecision}
+          onDismissDecision={() => { setActiveDecision(null); setDecisionError(null); }}
         />
       )}
 
@@ -334,7 +526,16 @@ export const App: React.FC = () => {
       {showEmergencyModal && (
         <EmergencyModeModal
           station={currentStation}
-          onClose={() => setShowEmergencyModal(false)}
+          onClose={handleCloseEmergencyModal}
+          activeRole={activeRole}
+          decision={activeEmergencyDecision}
+          decisionLoading={emergencyDecisionLoading}
+          decisionError={emergencyDecisionError}
+          onRequestRecommendation={handleRequestEmergencyRecommendation}
+          onRunSimulation={handleRunEmergencyDecisionSimulation}
+          onApproveDecision={handleApproveEmergencyDecision}
+          onRejectDecision={handleRejectEmergencyDecision}
+          onDismissDecision={() => { setActiveEmergencyDecision(null); setEmergencyDecisionError(null); }}
         />
       )}
 
@@ -345,7 +546,7 @@ export const App: React.FC = () => {
           onNavigateTab={setActiveTab}
           onSelectStation={setActiveStationId}
           onInjectAnomaly={handleInjectAnomaly}
-          onSelectAsset={setSelectedAsset}
+          onSelectAsset={handleSelectAsset}
           assets={stationAssets}
           onToggleSatellite={handleToggleSatellite}
           onClose={() => setShowDemoTour(false)}
