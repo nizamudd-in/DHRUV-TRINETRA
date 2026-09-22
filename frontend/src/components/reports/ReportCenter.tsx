@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Station, Asset, Alert } from '../../types';
-import { FileText, Download, Printer, CheckCircle, ShieldCheck } from 'lucide-react';
+import { FileText, Download, Printer, AlertTriangle } from 'lucide-react';
+import { api } from '../../services/api';
+import { DataSourceBadge } from '../common/DataSourceBadge';
 
 interface ReportCenterProps {
   station: Station;
@@ -10,14 +12,34 @@ interface ReportCenterProps {
 
 export const ReportCenter: React.FC<ReportCenterProps> = ({ station, assets, alerts }) => {
   const [selectedReportType, setSelectedReportType] = useState<'daily' | 'fuel' | 'maintenance' | 'incident'>('daily');
-  const [isExporting, setIsExporting] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
-  const handleExport = (format: 'pdf' | 'csv') => {
-    setIsExporting(true);
-    setTimeout(() => {
-      setIsExporting(false);
-      alert(`PolarTwin prototype report exported in ${format.toUpperCase()} format. SIH 2026 demonstration output — not an official NCPOR submission.`);
-    }, 800);
+  // Real server-generated PDF (see backend/app/report_generator.py) — no placeholder,
+  // no fake "Downloaded" message unless the browser actually received a file.
+  const handleExportPdf = async () => {
+    setExportingPdf(true);
+    setExportError(null);
+    try {
+      await api.downloadReportPdf(station.stationId);
+    } catch (e: any) {
+      setExportError(e?.message || 'PDF generation failed.');
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const handleExportCsv = async () => {
+    setExportingCsv(true);
+    setExportError(null);
+    try {
+      await api.downloadTelemetryCsv(station.stationId);
+    } catch (e: any) {
+      setExportError(e?.message || 'CSV export failed.');
+    } finally {
+      setExportingCsv(false);
+    }
   };
 
   return (
@@ -29,26 +51,34 @@ export const ReportCenter: React.FC<ReportCenterProps> = ({ station, assets, ale
             <FileText size={22} color="var(--accent-cyan)" />
             NCPOR Antarctic Operations Executive Reporting & Compliance
           </h2>
-          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
             Prototype Station Audit & Mission Log — formatted for Ministry of Earth Sciences (MoES) review
+            <DataSourceBadge kind="MIXED" detail="Equipment/energy figures: simulated telemetry. Risk/health/AI figures: prototype-derived models." />
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            className="btn btn-outline"
-            onClick={() => handleExport('csv')}
-            disabled={isExporting}
-          >
-            <Download size={14} /> Export Raw CSV
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => handleExport('pdf')}
-            disabled={isExporting}
-          >
-            <Printer size={14} /> Generate PDF
-          </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              className="btn btn-outline"
+              onClick={handleExportCsv}
+              disabled={exportingCsv}
+            >
+              <Download size={14} /> {exportingCsv ? 'Exporting…' : 'Export Real CSV'}
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleExportPdf}
+              disabled={exportingPdf}
+            >
+              <Printer size={14} /> {exportingPdf ? 'Generating…' : 'Generate PDF'}
+            </button>
+          </div>
+          {exportError && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: '#fca5a5' }}>
+              <AlertTriangle size={12} /> {exportError}
+            </div>
+          )}
         </div>
       </div>
 
@@ -150,7 +180,10 @@ export const ReportCenter: React.FC<ReportCenterProps> = ({ station, assets, ale
               1. Executive Operational Overview
             </h3>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-              Over the preceding 24-hour observation window, all life-support, power generation, and environmental containment systems at {station.name} operated within safety envelopes. A thermal heating load increase of +12.4% was recorded due to an ambient katabatic gale (-28.4°C, 36.5 kts). Emergency Standby Genset 03 successfully completed scheduled cold-start validation.
+              Snapshot at report generation time: {station.name} is {station.status} with a {station.healthScore}% health
+              index, ambient conditions {station.currentTemp}°C / {station.windSpeedKts} kts, and{' '}
+              {alerts.filter(a => !a.acknowledged).length} unacknowledged active alert(s).
+              {station.emergencyActive ? ' Emergency triage is currently ENGAGED.' : ''}
             </p>
 
             <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 6, marginTop: 10 }}>
@@ -168,27 +201,33 @@ export const ReportCenter: React.FC<ReportCenterProps> = ({ station, assets, ale
               <tbody>
                 <tr>
                   <td>Microgrid Primary Power</td>
-                  <td><span className="badge badge-normal">94% Nominal</span></td>
-                  <td className="telemetry-val">345 kW / 600 kW</td>
-                  <td>Satisfies 100% life-support reserve criteria</td>
+                  <td><span className={`badge badge-${station.powerLoadKw / station.powerCapacityKw > 0.9 ? 'critical' : 'normal'}`}>{((station.powerLoadKw / station.powerCapacityKw) * 100).toFixed(0)}% Load</span></td>
+                  <td className="telemetry-val">{station.powerLoadKw} kW / {station.powerCapacityKw} kW</td>
+                  <td>{station.powerLoadKw / station.powerCapacityKw < 0.95 ? 'Satisfies life-support reserve criteria' : 'Near capacity — review load shedding'}</td>
                 </tr>
                 <tr>
                   <td>Winter Fuel Reserve</td>
-                  <td><span className="badge badge-normal">Safe</span></td>
-                  <td className="telemetry-val">215,000 Liters</td>
-                  <td>142 Days Remaining (Surpasses 90d mandatory margin)</td>
+                  <td><span className={`badge badge-${station.fuelDaysRemaining < 60 ? 'warning' : 'normal'}`}>{station.fuelDaysRemaining < 60 ? 'Watch' : 'Safe'}</span></td>
+                  <td className="telemetry-val">{station.fuelDaysRemaining} days</td>
+                  <td>{station.fuelDaysRemaining >= 90 ? 'Surpasses 90d mandatory margin' : 'Below 90d mandatory margin'}</td>
                 </tr>
-                <tr>
-                  <td>Caterpillar Genset 02</td>
-                  <td><span className="badge badge-critical">Vibration Alert</span></td>
-                  <td className="telemetry-val">3.90 mm/s (Bearing Temp 78.4°C)</td>
-                  <td>Work Order WO-2026-089 active; spares verified in depot</td>
-                </tr>
+                {(() => {
+                  const worst = [...assets].sort((a, b) => a.healthScore - b.healthScore)[0];
+                  if (!worst) return null;
+                  return (
+                    <tr>
+                      <td>{worst.assetId} ({worst.name})</td>
+                      <td><span className={`badge badge-${worst.status === 'offline' ? 'offline' : worst.status === 'critical' ? 'critical' : worst.status === 'warning' ? 'warning' : 'normal'}`}>{worst.status}</span></td>
+                      <td className="telemetry-val">{worst.vibration.toFixed(2)} mm/s, {worst.temperature.toFixed(1)}°C (Health {worst.healthScore.toFixed(1)}%)</td>
+                      <td>Lowest calculated health index at this station</td>
+                    </tr>
+                  );
+                })()}
                 <tr>
                   <td>Satellite Uplink (SATCOM)</td>
-                  <td><span className="badge badge-normal">Active</span></td>
-                  <td className="telemetry-val">SNR 99.8% • Latency 580 ms</td>
-                  <td>Edge Store-and-Forward sync buffer 0 events pending</td>
+                  <td><span className={`badge badge-${station.connectivity === 'ONLINE' ? 'normal' : 'critical'}`}>{station.connectivity}</span></td>
+                  <td className="telemetry-val">Connectivity: {station.connectivity}</td>
+                  <td>See Communication panel for buffered event count</td>
                 </tr>
               </tbody>
             </table>
@@ -197,9 +236,10 @@ export const ReportCenter: React.FC<ReportCenterProps> = ({ station, assets, ale
 
         {selectedReportType === 'fuel' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#fff' }}>Fuel & Energy Consumption Breakdown</h3>
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#fff' }}>Fuel &amp; Energy Consumption Snapshot</h3>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Total daily consumption is averaging 1,510 Liters/day of Arctic ATF/Jet A-1. Solar bifacial PV arrays contributed 28 kW during solar daylight windows, conserving an estimated 196.8 Liters of diesel over the last 24 hours.
+              Current load {station.powerLoadKw} kW against {station.powerCapacityKw} kW rated capacity ({((station.powerLoadKw / station.powerCapacityKw) * 100).toFixed(1)}%).
+              BESS at {station.batterySoc}% SOC. Fuel runway {station.fuelDaysRemaining} days remaining.
             </p>
           </div>
         )}

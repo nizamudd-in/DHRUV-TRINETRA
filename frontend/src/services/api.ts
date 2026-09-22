@@ -1,4 +1,4 @@
-import { Station, Asset, Alert, InventoryItem, WorkOrder, SimulationRequest, SimulationResult, CopilotMessage, EdgeStatus, ActionDecision, AuditEvent } from '../types';
+import { Station, Asset, Alert, InventoryItem, WorkOrder, SimulationRequest, SimulationResult, CopilotMessage, EdgeStatus, ActionDecision, AuditEvent, CrossDomainRisk, FailureCascade, AssetHealthDetail, StationHistory, DemoResetSummary } from '../types';
 
 const API_BASE = '/api';
 
@@ -667,5 +667,83 @@ export const api = {
       if (res.ok) return await res.json();
     } catch (_) {}
     return [];
+  },
+
+  async getCrossDomainRisk(stationId: 'BHARATI' | 'MAITRI'): Promise<CrossDomainRisk> {
+    const res = await fetch(`${API_BASE}/risk/${stationId}`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Risk calculation unavailable' }));
+      throw new Error(err.detail || 'Risk calculation unavailable');
+    }
+    return await res.json();
+  },
+
+  async simulateFailureCascade(stationId: 'BHARATI' | 'MAITRI', assetId: string, failureMode: string = 'OFFLINE'): Promise<FailureCascade> {
+    const res = await fetch(`${API_BASE}/simulation/cascade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stationId, assetId, failureMode })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failure cascade simulation unavailable' }));
+      throw new Error(err.detail || 'Failure cascade simulation unavailable');
+    }
+    return await res.json();
+  },
+
+  async getAssetHealth(assetId: string): Promise<AssetHealthDetail | null> {
+    try {
+      const res = await fetch(`${API_BASE}/assets/${assetId}/telemetry`, { signal: AbortSignal.timeout(3000) });
+      if (res.ok) return await res.json();
+    } catch (_) {}
+    return null;
+  },
+
+  async getStationHistory(stationId: 'BHARATI' | 'MAITRI'): Promise<StationHistory> {
+    const res = await fetch(`${API_BASE}/stations/${stationId}/history`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Historical telemetry unavailable' }));
+      throw new Error(err.detail || 'Historical telemetry unavailable');
+    }
+    return await res.json();
+  },
+
+  // Triggers a real browser download of a server-generated file (PDF/CSV). Reads the
+  // filename from Content-Disposition (set server-side) rather than guessing it.
+  async downloadFile(url: string, fallbackFilename: string): Promise<void> {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(detail || `Export failed (${res.status})`);
+    }
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^";]+)"?/);
+    const filename = match ? match[1] : fallbackFilename;
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  },
+
+  async downloadReportPdf(stationId: 'BHARATI' | 'MAITRI'): Promise<void> {
+    await api.downloadFile(`${API_BASE}/reports/${stationId}/pdf`, `POLAR-TWIN_${stationId}_Report.pdf`);
+  },
+
+  async downloadTelemetryCsv(stationId: 'BHARATI' | 'MAITRI'): Promise<void> {
+    await api.downloadFile(`${API_BASE}/reports/${stationId}/csv`, `POLAR-TWIN_${stationId}_Telemetry.csv`);
+  },
+
+  async resetDemo(): Promise<DemoResetSummary> {
+    const res = await fetch(`${API_BASE}/demo/reset`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Reset failed' }));
+      throw new Error(err.detail || 'Reset failed');
+    }
+    return await res.json();
   }
 };

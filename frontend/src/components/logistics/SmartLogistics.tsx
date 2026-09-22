@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { InventoryItem } from '../../types';
 import { Package, Ship, AlertTriangle, CheckCircle, Clock, ShieldCheck, ArrowRight } from 'lucide-react';
+import { DataSourceBadge } from '../common/DataSourceBadge';
 
 interface SmartLogisticsProps {
   inventory: InventoryItem[];
@@ -16,6 +17,9 @@ export const SmartLogistics: React.FC<SmartLogisticsProps> = ({ inventory }) => 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <DataSourceBadge kind="SIMULATED" detail="Inventory quantities and consumption rates are prototype/demo data." />
+      </div>
       {/* Top Metric Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
         <div className="glass-panel metric-card">

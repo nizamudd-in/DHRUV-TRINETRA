@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Station, EdgeStatus } from '../../types';
-import { Radio, Wifi, WifiOff, AlertTriangle, Play, Shield, Globe, Clock, UserCheck } from 'lucide-react';
+import { Radio, Wifi, WifiOff, AlertTriangle, Play, Shield, Globe, Clock, UserCheck, RotateCcw } from 'lucide-react';
+import { PrototypeIndicator } from './PrototypeIndicator';
 
 interface HeaderProps {
   currentStation: Station;
@@ -11,6 +12,7 @@ interface HeaderProps {
   onStartDemo: () => void;
   activeRole: string;
   onSelectRole: (role: string) => void;
+  onOpenResetDemo: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -21,7 +23,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenEmergency,
   onStartDemo,
   activeRole,
-  onSelectRole
+  onSelectRole,
+  onOpenResetDemo
 }) => {
   const [timeUtc, setTimeUtc] = useState('');
   const [timeIst, setTimeIst] = useState('');
@@ -196,6 +199,18 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <AlertTriangle size={15} /> {currentStation.emergencyActive ? 'EMERGENCY ACTIVE' : 'EMERGENCY'}
         </button>
+
+        {/* Global Demo Reset — restores BOTH stations, not just the active one */}
+        <button
+          onClick={onOpenResetDemo}
+          className="btn btn-outline"
+          style={{ padding: '6px 12px', fontSize: '0.78rem' }}
+          title="Reset the entire demonstration (both stations) to baseline"
+        >
+          <RotateCcw size={14} /> Reset Demo
+        </button>
+
+        <PrototypeIndicator />
       </div>
     </header>
   );

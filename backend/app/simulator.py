@@ -4,6 +4,7 @@ import random
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 from .models import Station, Asset, Alert, InventoryItem, WorkOrder, StationHealthBreakdown, ActionDecision
+from .health_model import calculate_asset_health
 
 class PolarTwinSimulator:
     def __init__(self):
@@ -315,6 +316,15 @@ class PolarTwinSimulator:
         # Lightweight prototype audit trail (newest first)
         self.audit_log: List[Dict[str, Any]] = []
 
+        # Replace hand-seeded healthScore values with the deterministic prototype
+        # health model's calculation from each asset's own seeded telemetry — see
+        # health_model.py. This also runs after every telemetry-changing action
+        # below (inject/reset anomaly, maintenance approval) so healthScore always
+        # reflects current vibration/temperature/runtime/load, never a stored constant.
+        for _asset_list in self.assets.values():
+            for _a in _asset_list:
+                _a.healthScore = calculate_asset_health(_a)["healthScore"]
+
         # Baseline snapshots so demo reset can restore ANY asset/station accurately,
         # not just the originally-hardcoded GEN-02/BHARATI scenario.
         self._asset_baselines: Dict[str, Dict[str, Any]] = {}
@@ -334,6 +344,20 @@ class PolarTwinSimulator:
                 "protectedLoadKw": _st.protectedLoadKw, "shedLoadKw": _st.shedLoadKw,
                 "emergencyActive": _st.emergencyActive, "emergencyStrategy": _st.emergencyStrategy
             }
+
+        # Full-fidelity baselines for the GLOBAL demo reset (POST /api/demo/reset), which restores
+        # the entire prototype — not just one asset's station — to a clean starting point.
+        self._alerts_baseline: List[Alert] = [a.model_copy(deep=True) for a in self.alerts]
+        self._work_orders_baseline: List[WorkOrder] = [w.model_copy(deep=True) for w in self.work_orders]
+        self._inventory_baseline: List[InventoryItem] = [i.model_copy(deep=True) for i in self.inventory]
+
+    def refresh_asset_health(self, asset: Asset) -> float:
+        """Recalculates an asset's healthScore from its current telemetry via the
+        deterministic prototype health model (health_model.py) and applies it
+        in place. Call this after any change to vibration/temperature/runtime/
+        powerKw so healthScore is never a stale/hardcoded number."""
+        asset.healthScore = calculate_asset_health(asset)["healthScore"]
+        return asset.healthScore
 
     def log_audit(self, station_id: str, asset_id: Optional[str], action: str, actor: str,
                    decision_id: Optional[str] = None, result: Optional[str] = None,
@@ -409,11 +433,12 @@ class PolarTwinSimulator:
         if severity == "critical":
             target_asset.vibration = 4.85
             target_asset.temperature = 84.6
-            target_asset.healthScore = 64.0
             target_asset.status = "critical"
             target_asset.failureRisk = "High"
             target_asset.predictedFailureDays = 3
             target_asset.recommendedAction = "IMMEDIATE SHUTDOWN & BEARING REPLACEMENT RECOMMENDED"
+            # healthScore is DERIVED from the telemetry just set above, not a stored constant.
+            self.refresh_asset_health(target_asset)
 
             # Create immediate high-priority alert
             new_alert = Alert(
@@ -468,12 +493,14 @@ class PolarTwinSimulator:
                     baseline = self._asset_baselines.get(asset_id, {})
                     a.vibration = baseline.get("vibration", a.vibration)
                     a.temperature = baseline.get("temperature", a.temperature)
-                    a.healthScore = baseline.get("healthScore", a.healthScore)
                     a.status = baseline.get("status", "normal")
                     a.failureRisk = baseline.get("failureRisk", "Low")
                     a.predictedFailureDays = baseline.get("predictedFailureDays", a.predictedFailureDays)
                     a.recommendedAction = baseline.get("recommendedAction", a.recommendedAction)
                     a.powerKw = baseline.get("powerKw", a.powerKw)
+                    # healthScore is RECALCULATED from the telemetry just restored above —
+                    # never replayed from a stored/hardcoded number.
+                    self.refresh_asset_health(a)
 
                     st_baseline = self._station_baselines.get(st_id, {})
                     station = self.stations[st_id]
@@ -507,6 +534,7 @@ class PolarTwinSimulator:
                             other.powerKw = other_baseline.get("powerKw", 0.0)
                             other.recommendedAction = other_baseline.get("recommendedAction", other.recommendedAction)
                             other.status = other_baseline.get("status", other.status)
+                            self.refresh_asset_health(other)
 
                     # Remove the emergency-engaged alert raised for this station, if any
                     self.alerts = [
@@ -524,5 +552,75 @@ class PolarTwinSimulator:
                     self.log_audit(st_id, asset_id, f"{asset_id} restored to baseline (demo reset)", "SYSTEM", result="RESET")
                     return {"success": True, "asset": a}
         return {"error": "Asset not found"}
+
+    def reset_all(self) -> Dict[str, Any]:
+        """Global demo reset: restores EVERY station and EVERY asset (both Bharati and
+        Maitri) to their startup baselines, in one deterministic backend operation.
+        Unlike reset_anomaly() (which is scoped to one asset's station), this clears
+        ALL decisions, work orders created by decisions, alerts, the sync queue,
+        satellite connectivity, and the audit log — a true return to a clean demo
+        starting point. Never implemented as a browser reload."""
+        reset_items: List[str] = []
+
+        for st_id, asset_list in self.assets.items():
+            for a in asset_list:
+                baseline = self._asset_baselines.get(a.assetId, {})
+                a.vibration = baseline.get("vibration", a.vibration)
+                a.temperature = baseline.get("temperature", a.temperature)
+                a.status = baseline.get("status", "normal")
+                a.failureRisk = baseline.get("failureRisk", "Low")
+                a.predictedFailureDays = baseline.get("predictedFailureDays", a.predictedFailureDays)
+                a.recommendedAction = baseline.get("recommendedAction", a.recommendedAction)
+                a.powerKw = baseline.get("powerKw", a.powerKw)
+                self.refresh_asset_health(a)
+        reset_items.append("equipment_telemetry_and_health")
+
+        for st_id, station in self.stations.items():
+            st_baseline = self._station_baselines.get(st_id, {})
+            station.healthScore = st_baseline.get("healthScore", station.healthScore)
+            station.status = st_baseline.get("status", "operational")
+            station.healthBreakdown.equipment = st_baseline.get("equipment", station.healthBreakdown.equipment)
+            station.healthBreakdown.energy = st_baseline.get("energy", station.healthBreakdown.energy)
+            station.powerLoadKw = st_baseline.get("powerLoadKw", station.powerLoadKw)
+            station.batterySoc = st_baseline.get("batterySoc", station.batterySoc)
+            station.protectedLoadKw = st_baseline.get("protectedLoadKw", station.protectedLoadKw)
+            station.shedLoadKw = st_baseline.get("shedLoadKw", 0.0)
+            station.emergencyActive = st_baseline.get("emergencyActive", False)
+            station.emergencyStrategy = st_baseline.get("emergencyStrategy", None)
+            station.connectivity = "ONLINE"
+        reset_items.append("station_state_and_emergency_status")
+
+        self.alerts = [a.model_copy(deep=True) for a in self._alerts_baseline]
+        reset_items.append("alerts")
+
+        self.work_orders = [w.model_copy(deep=True) for w in self._work_orders_baseline]
+        self.decision_workorders = {}
+        reset_items.append("work_orders")
+
+        self.inventory = [i.model_copy(deep=True) for i in self._inventory_baseline]
+        reset_items.append("inventory")
+
+        self.decisions = {}
+        reset_items.append("ai_decisions_simulations_approvals")
+
+        self.sync_queue = []
+        self.is_satellite_online = True
+        reset_items.append("communication_and_sync_queue")
+
+        self.audit_log = []
+        reset_items.append("audit_log")
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        station_ids = list(self.stations.keys())
+        self.log_audit(station_ids[0] if station_ids else "BHARATI", None,
+                        "Global demo reset performed — all stations restored to baseline",
+                        "SYSTEM", result="GLOBAL_RESET")
+
+        return {
+            "status": "reset",
+            "stations": station_ids,
+            "reset_items": reset_items,
+            "timestamp": timestamp
+        }
 
 simulator = PolarTwinSimulator()

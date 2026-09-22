@@ -176,6 +176,60 @@ class ApprovalRequest(BaseModel):
 class RejectionRequest(BaseModel):
     rejectedBy: str
 
+class DomainRisk(BaseModel):
+    domain: str  # environment, energy, equipment, logistics, communication
+    severity: str  # LOW, MEDIUM, HIGH, CRITICAL
+    score: float  # 0-100
+    driver: Optional[str] = None  # asset/inventory id most responsible for this domain's score, if any
+    reason: str
+
+class CrossDomainRisk(BaseModel):
+    stationId: str
+    overallRisk: str  # LOW, MEDIUM, HIGH, CRITICAL
+    overallScore: float  # 0-100
+    primaryDriver: str
+    domainRisks: List[DomainRisk]
+    contributingFactors: List[str]
+    affectedSystems: List[str]
+    interactions: List[str]  # cross-domain interaction rules that fired, human-readable
+    recommendations: List[str]
+    calculatedAt: str
+
+class CascadeStep(BaseModel):
+    sequence: int
+    source: str
+    target: str
+    relationship: str  # POWERS, DEPENDS_ON, BACKUP_FOR, SUPPORTS, COOLS, HEATS, COMMUNICATES_WITH, REQUIRES, PROTECTS
+    effect: str
+    severity: str  # LOW, MEDIUM, HIGH, CRITICAL
+    explanation: str
+
+class FailureCascade(BaseModel):
+    cascadeId: str
+    stationId: str
+    triggerAssetId: str
+    triggerAssetName: str
+    triggerFailure: str  # e.g. OFFLINE
+    severity: str  # overall cascade severity, LOW/MEDIUM/HIGH/CRITICAL
+    initialState: Dict[str, Any]
+    cascadeSteps: List[CascadeStep]
+    affectedAssets: List[str]
+    affectedDomains: List[str]
+    lostCapacityKw: float
+    projectedLoadKw: float
+    projectedGenerationMarginKw: float
+    batteryImpact: Dict[str, Any]
+    operationalImpact: List[str]
+    missionImpact: str
+    finalRisk: CrossDomainRisk  # projected Cross-Domain Risk if this failure occurred (not yet applied to real state)
+    mitigations: List[str]
+    generatedAt: str
+
+class CascadeRequest(BaseModel):
+    stationId: str
+    assetId: str
+    failureMode: str = "OFFLINE"
+
 class SyncEvent(BaseModel):
     eventId: str
     stationId: str

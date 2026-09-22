@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ActiveTab, Station, Asset, Alert, InventoryItem, WorkOrder, EdgeStatus, ActionDecision } from './types';
+import { ActiveTab, Station, Asset, Alert, InventoryItem, WorkOrder, EdgeStatus, ActionDecision, CrossDomainRisk } from './types';
 import { api, initialStations, initialAssets, initialAlerts, initialInventory, initialWorkOrders } from './services/api';
 import { Header } from './components/common/Header';
 import { Sidebar } from './components/common/Sidebar';
@@ -17,6 +17,8 @@ import { AICopilot } from './components/ai/AICopilot';
 import { ReportCenter } from './components/reports/ReportCenter';
 import { EmergencyModeModal } from './components/emergency/EmergencyModeModal';
 import { DemoTourRunner } from './components/demo/DemoTourRunner';
+import { ResetDemoModal } from './components/common/ResetDemoModal';
+import { ErrorState } from './components/common/StateViews';
 import './styles/theme.css';
 
 export const App: React.FC = () => {
@@ -37,6 +39,12 @@ export const App: React.FC = () => {
   const [activeEmergencyDecision, setActiveEmergencyDecision] = useState<ActionDecision | null>(null);
   const [emergencyDecisionLoading, setEmergencyDecisionLoading] = useState(false);
   const [emergencyDecisionError, setEmergencyDecisionError] = useState<string | null>(null);
+  // Cross-Domain Risk: backend is the sole source of truth, never computed/cached client-side.
+  // riskRefreshTrigger is bumped after any action that mutates station state, forcing a re-fetch.
+  const [crossDomainRisk, setCrossDomainRisk] = useState<CrossDomainRisk | null>(null);
+  const [riskLoading, setRiskLoading] = useState(false);
+  const [riskError, setRiskError] = useState<string | null>(null);
+  const [riskRefreshTrigger, setRiskRefreshTrigger] = useState(0);
   const [edgeStatus, setEdgeStatus] = useState<EdgeStatus>({
     is_online: true,
     status: 'ONLINE',
@@ -51,10 +59,15 @@ export const App: React.FC = () => {
   const [showDemoTour, setShowDemoTour] = useState(false);
   const [thermalOverlay, setThermalOverlay] = useState(false);
   const [vibrationOverlay, setVibrationOverlay] = useState(false);
+  const [showResetDemoModal, setShowResetDemoModal] = useState(false);
+  const [resetDemoLoading, setResetDemoLoading] = useState(false);
+  const [resetDemoError, setResetDemoError] = useState<string | null>(null);
+  const [initialLoadError, setInitialLoadError] = useState<string | null>(null);
 
-  // Initial Data Load
-  useEffect(() => {
-    const loadData = async () => {
+  // Initial Data Load — falls back to bundled initial* mock state on failure so the
+  // app never renders blank; the banner below surfaces the failure instead.
+  const loadInitialData = React.useCallback(async () => {
+    try {
       const [sts, asts, alts, inv, wos] = await Promise.all([
         api.getStations(),
         api.getAssets(),
@@ -67,9 +80,27 @@ export const App: React.FC = () => {
       setAlerts(alts);
       setInventory(inv);
       setWorkOrders(wos);
-    };
-    loadData();
+      setInitialLoadError(null);
+    } catch (e: any) {
+      setInitialLoadError(e?.message || 'Could not reach the POLAR-TWIN backend. Showing last known data.');
+    }
   }, []);
+
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
+
+  // Cross-Domain Risk: re-fetch whenever the active station changes or riskRefreshTrigger is bumped
+  // (after anomaly inject/reset or any approved decision — see those handlers below).
+  useEffect(() => {
+    let cancelled = false;
+    setRiskLoading(true);
+    api.getCrossDomainRisk(activeStationId)
+      .then(r => { if (!cancelled) { setCrossDomainRisk(r); setRiskError(null); } })
+      .catch(e => { if (!cancelled) setRiskError(e?.message || 'Risk calculation unavailable.'); })
+      .finally(() => { if (!cancelled) setRiskLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeStationId, riskRefreshTrigger]);
 
   // Continuous subtle telemetry pulse (life-like simulator)
   useEffect(() => {
@@ -142,6 +173,7 @@ export const App: React.FC = () => {
     setAssets(asts);
     setAlerts(alts);
     setStations(sts);
+    setRiskRefreshTrigger(t => t + 1);
     const target = asts.find(a => a.assetId === targetId);
     if (target) handleSelectAsset(target);
   };
@@ -160,11 +192,54 @@ export const App: React.FC = () => {
     setAlerts(alts);
     setStations(sts);
     setWorkOrders(wos);
+    setRiskRefreshTrigger(t => t + 1);
     if (activeDecision && activeDecision.assetId === targetId) {
       setActiveDecision(null);
       setDecisionError(null);
     }
     setDemoAnomalyAssetId(null);
+  };
+
+  // Global Demo Reset (P3 Phase 7): a REAL backend state reset covering both stations,
+  // not a browser reload and not scoped to a single asset like handleResetAnomaly above.
+  const handleResetDemo = async () => {
+    setResetDemoLoading(true);
+    setResetDemoError(null);
+    try {
+      await api.resetDemo();
+      const [sts, asts, alts, inv, wos] = await Promise.all([
+        api.getStations(),
+        api.getAssets(),
+        api.getAlerts(),
+        api.getInventory(),
+        api.getWorkOrders()
+      ]);
+      setStations(sts);
+      setAssets(asts);
+      setAlerts(alts);
+      setInventory(inv);
+      setWorkOrders(wos);
+      setEdgeStatus({
+        is_online: true,
+        status: 'ONLINE',
+        queue_depth: 0,
+        last_sync: '07:42 IST (Nominal)',
+        station_edge_nodes: []
+      });
+      setSelectedAsset(null);
+      setActiveDecision(null);
+      setDecisionError(null);
+      setActiveEmergencyDecision(null);
+      setEmergencyDecisionError(null);
+      setShowEmergencyModal(false);
+      setDemoAnomalyAssetId(null);
+      setRiskRefreshTrigger(t => t + 1);
+      setShowResetDemoModal(false);
+    } catch (e: any) {
+      setResetDemoError(e?.message || 'Reset failed. Please try again.');
+    } finally {
+      setResetDemoLoading(false);
+    }
   };
 
   // Asset selection: switching to a different asset invalidates any decision panel in view
@@ -192,6 +267,16 @@ export const App: React.FC = () => {
     } finally {
       setDecisionLoading(false);
     }
+  };
+
+  // Cross-Domain Risk -> Primary Driver -> AI Recommendation: connects the risk panel to the
+  // existing per-asset decision flow (opens the drawer and immediately requests a recommendation
+  // for the asset the risk engine identified as the primary driver).
+  const handleInspectRiskDriver = (assetId: string) => {
+    const asset = stationAssets.find(a => a.assetId === assetId);
+    if (!asset) return;
+    handleSelectAsset(asset);
+    handleRequestRecommendation(asset);
   };
 
   const handleRunDecisionSimulation = async () => {
@@ -225,6 +310,7 @@ export const App: React.FC = () => {
       setAlerts(alts);
       setStations(sts);
       setWorkOrders(wos);
+      setRiskRefreshTrigger(t => t + 1);
       const updatedAsset = asts.find(a => a.assetId === dec.assetId);
       if (updatedAsset) setSelectedAsset(updatedAsset);
     } catch (e: any) {
@@ -292,6 +378,7 @@ export const App: React.FC = () => {
       setAssets(asts);
       setAlerts(alts);
       setStations(sts);
+      setRiskRefreshTrigger(t => t + 1);
     } catch (e: any) {
       setEmergencyDecisionError(e?.message || 'Approval failed.');
     } finally {
@@ -362,6 +449,7 @@ export const App: React.FC = () => {
         onStartDemo={() => setShowDemoTour(true)}
         activeRole={activeRole}
         onSelectRole={setActiveRole}
+        onOpenResetDemo={() => setShowResetDemoModal(true)}
       />
 
       {/* Main Workspace Layout: Sidebar + Screen Content */}
@@ -380,6 +468,15 @@ export const App: React.FC = () => {
 
         {/* Content Viewport */}
         <main style={{ flex: 1, padding: '24px', overflowY: 'auto', maxHeight: 'calc(100vh - 68px)' }}>
+          {initialLoadError && (
+            <div style={{ marginBottom: 20 }}>
+              <ErrorState
+                title="Backend connection issue"
+                message={initialLoadError}
+                onRetry={loadInitialData}
+              />
+            </div>
+          )}
           {activeTab === 'dashboard' && (
             <MissionControlDashboard
               station={currentStation}
@@ -391,6 +488,11 @@ export const App: React.FC = () => {
               onAcknowledgeAlert={handleAcknowledgeAlert}
               onInjectAnomaly={handleInjectAnomaly}
               onResetAnomaly={handleResetAnomaly}
+              risk={crossDomainRisk}
+              riskLoading={riskLoading}
+              riskError={riskError}
+              onInspectRiskDriver={handleInspectRiskDriver}
+              onOpenEmergency={() => setShowEmergencyModal(true)}
             />
           )}
 
@@ -439,7 +541,7 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'energy' && (
-            <EnergyManagement station={currentStation} />
+            <EnergyManagement station={currentStation} assets={stationAssets} />
           )}
 
           {activeTab === 'equipment' && (
@@ -550,6 +652,16 @@ export const App: React.FC = () => {
           assets={stationAssets}
           onToggleSatellite={handleToggleSatellite}
           onClose={() => setShowDemoTour(false)}
+        />
+      )}
+
+      {/* Global Demo Reset Confirmation */}
+      {showResetDemoModal && (
+        <ResetDemoModal
+          loading={resetDemoLoading}
+          error={resetDemoError}
+          onConfirm={handleResetDemo}
+          onClose={() => { setShowResetDemoModal(false); setResetDemoError(null); }}
         />
       )}
     </div>
