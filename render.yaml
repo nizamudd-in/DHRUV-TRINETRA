@@ -1,0 +1,30 @@
+# Render Blueprint for POLAR-TWIN — deploys the FastAPI backend and the Vite/React
+# frontend as two separate services. See backend/requirements.txt and backend/runtime.txt
+# for the exact pinned Python/dependency versions this app has been built and tested against.
+#
+# After the first deploy, open the frontend service's Environment tab and set
+# VITE_API_BASE_URL to the backend service's public URL + "/api" (e.g.
+# "https://polartwin-backend.onrender.com/api"), then trigger a redeploy of the frontend —
+# Render's fromService reference only exposes the backend's private network host, not its
+# public HTTPS URL, so this one value has to be filled in by hand once the backend's real
+# URL is known.
+services:
+  - name: polartwin-backend
+    type: web
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+
+  - name: polartwin-frontend
+    type: web
+    runtime: static
+    rootDir: frontend
+    plan: free
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
