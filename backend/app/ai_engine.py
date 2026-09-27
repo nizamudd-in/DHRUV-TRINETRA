@@ -1101,38 +1101,76 @@ class PolarAIEngine:
         st = simulator.stations.get(query.stationId, simulator.stations["BHARATI"])
         assets = simulator.assets.get(query.stationId, [])
 
-        # Generator G-02 or risk query
-        if "generator" in p or "g-02" in p or "highest" in p or "risk" in p or "attention" in p or "fail" in p:
-            g2 = next((a for a in assets if a.assetId == "GEN-02"), None)
+        # Asset context (Section 19): when the caller supplies a real selected/contextual
+        # asset, look IT up instead of the old hardcoded GEN-02 fallback. Falls back to the
+        # previous "highest risk generator" default when no context is supplied, so existing
+        # demo behavior is unchanged.
+        context_asset_id = (query.context or {}).get("assetId") if query.context else None
+        context_asset = next((a for a in assets if a.assetId == context_asset_id), None) if context_asset_id else None
+
+        # Generator query — real per-asset telemetry, generalized beyond GEN-02.
+        if (context_asset and context_asset.type == "generator") or (
+            not context_asset and ("generator" in p or "g-02" in p or "highest" in p or "risk" in p or "attention" in p or "fail" in p)
+        ):
+            g2 = context_asset or next((a for a in assets if a.assetId == "GEN-02"), None)
+            asset_label = g2.name if g2 else "Generator G-02"
+            asset_id_label = g2.assetId if g2 else "GEN-02"
             vibe = g2.vibration if g2 else 3.9
             temp = g2.temperature if g2 else 78.4
             health = g2.healthScore if g2 else 71.8
 
             return CopilotResponse(
                 answer=(
-                    f"**Generator G-02** has the highest operational risk index at {st.name}.\n\n"
-                    f"• **Current Health Score:** {health:.1f}% ({'CRITICAL' if health < 70 else 'WARNING'})\n"
+                    f"**{asset_label} ({asset_id_label})** {'has the highest operational risk index' if not context_asset else 'status'} at {st.name}.\n\n"
+                    f"• **Current Health Score:** {health:.1f}% ({'CRITICAL' if health < 70 else 'WARNING' if health < 85 else 'NORMAL'})\n"
                     f"• **Bearing Vibration:** {vibe:.2f} mm/s (Normal threshold: <1.8 mm/s)\n"
-                    f"• **Stator/Bearing Temp:** {temp:.1f}°C (+14°C above baseline)\n\n"
+                    f"• **Stator/Bearing Temp:** {temp:.1f}°C\n\n"
                     f"AI spectral vibration analysis indicates a 2X shaft rotational harmonic, indicating drive-end ceramic roller bearing pitting. "
                     f"If left unaddressed during the upcoming katabatic gale, bearing lockup probability within 96 hours is **88.4%**."
+                ) if (health < 85 or vibe > 2.5) else (
+                    f"**{asset_label} ({asset_id_label})** is currently within normal operating parameters at {st.name}.\n\n"
+                    f"• **Current Health Score:** {health:.1f}% (NORMAL)\n"
+                    f"• **Vibration:** {vibe:.2f} mm/s\n"
+                    f"• **Temperature:** {temp:.1f}°C\n\n"
+                    f"No corrective action required at this time."
                 ),
                 confidence=0.96,
                 contributingFactors=[
                     "High harmonic 2X vibration peak detected by accelerometer",
                     "Elevated lube oil differential temperature (+8.2°C)",
                     "Continuous duty runtime past 7,800 operational hours"
-                ],
+                ] if (health < 85 or vibe > 2.5) else [],
                 recommendedActions=[
-                    "Execute Work Order WO-2026-089 (Mechanical Bearing Inspection)",
-                    "Verify spare Caterpillar G3516 Ceramic Journal Bearings (INV-01: 2 sets available in storage)",
-                    "Pre-warm Emergency Standby Genset 3 (GEN-03) prior to taking G-02 offline",
+                    f"Execute a work order for {asset_id_label} (Mechanical Bearing Inspection)",
+                    "Verify spare Caterpillar G3516 Ceramic Journal Bearings in inventory",
+                    "Pre-warm an available Emergency Standby Genset prior to taking this unit offline",
                     "Run What-If simulation to model load shedding during maintenance window"
-                ],
+                ] if (health < 85 or vibe > 2.5) else [],
                 suggestedFollowups=[
-                    "Check spare part availability for GEN-02",
-                    "Simulate taking Generator G-02 offline",
+                    f"Check spare part availability for {asset_id_label}",
+                    f"Simulate taking {asset_id_label} offline",
                     "What is current fuel consumption rate?"
+                ]
+            )
+
+        # Any other real asset in context (non-generator) — honest, telemetry-only answer;
+        # never reuses the generator-specific bearing/vibration narrative for a different
+        # asset type.
+        if context_asset:
+            return CopilotResponse(
+                answer=(
+                    f"**{context_asset.name} ({context_asset.assetId})** is currently **{context_asset.status.upper()}**.\n\n"
+                    f"• **Health Score:** {context_asset.healthScore:.1f}%\n"
+                    f"• **Power:** {context_asset.powerKw:.1f} kW\n"
+                    f"• **Temperature:** {context_asset.temperature:.1f}°C\n\n"
+                    f"Ask a more specific question (e.g. fuel runway, spare parts, energy load) for further detail."
+                ),
+                confidence=0.85,
+                contributingFactors=[],
+                recommendedActions=[],
+                suggestedFollowups=[
+                    f"What is the failure risk for {context_asset.assetId}?",
+                    "What is our winter fuel runway?"
                 ]
             )
 

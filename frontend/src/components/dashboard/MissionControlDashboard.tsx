@@ -178,11 +178,12 @@ export const MissionControlDashboard: React.FC<MissionControlDashboardProps> = (
             <TwinCanvas3D
               stationId={station.stationId}
               assets={assets}
+              station={station}
+              alerts={alerts}
+              unacknowledgedAlertsCount={alerts.filter(a => !a.acknowledged).length}
               selectedAsset={criticalAsset || null}
               onSelectAsset={onSelectAsset}
-              thermalOverlay={false}
               vibrationOverlay={criticalAsset ? criticalAsset.vibration > 3.0 : false}
-              onToggleThermal={() => {}}
               onToggleVibration={() => {}}
             />
           </div>

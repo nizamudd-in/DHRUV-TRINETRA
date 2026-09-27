@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Asset, ActionDecision, AuditEvent, FailureCascade, AssetHealthDetail } from '../../types';
-import { X, Activity, Thermometer, Zap, Clock, ShieldAlert, Wrench, CheckCircle2, Bot, Sliders, ThumbsUp, ThumbsDown, RefreshCw, History, GitBranch, ArrowDown, Battery, ShieldCheck } from 'lucide-react';
+import { X, Activity, Thermometer, Zap, Clock, ShieldAlert, Wrench, CheckCircle2, Bot, Sliders, ThumbsUp, ThumbsDown, RefreshCw, History, GitBranch, ArrowDown, Battery, ShieldCheck, Crosshair } from 'lucide-react';
 import { api } from '../../services/api';
 import { TrendChart } from '../common/TrendChart';
 import { DataSourceBadge } from '../common/DataSourceBadge';
@@ -22,6 +22,7 @@ interface AssetDetailDrawerProps {
   asset: Asset | null;
   onClose: () => void;
   onCreateWorkOrder: (asset: Asset) => void;
+  onLocateInDigitalTwin?: (asset: Asset) => void;
   activeRole?: string;
   decision?: ActionDecision | null;
   decisionLoading?: boolean;
@@ -37,6 +38,7 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
   asset,
   onClose,
   onCreateWorkOrder,
+  onLocateInDigitalTwin,
   activeRole = 'National Operator',
   decision = null,
   decisionLoading = false,
@@ -695,6 +697,15 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
         display: 'flex',
         gap: 10
       }}>
+        {onLocateInDigitalTwin && (
+          <button
+            className="btn btn-cyan"
+            onClick={() => onLocateInDigitalTwin(asset)}
+            title="Jump to the 3D Digital Twin and fly the camera to this asset"
+          >
+            <Crosshair size={16} /> Locate in Digital Twin
+          </button>
+        )}
         <button
           className="btn btn-primary"
           style={{ flex: 1 }}

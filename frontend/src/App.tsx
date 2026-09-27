@@ -6,6 +6,9 @@ import { Sidebar } from './components/common/Sidebar';
 import { MissionControlDashboard } from './components/dashboard/MissionControlDashboard';
 import { TwinCanvas3D } from './components/digitaltwin/TwinCanvas3D';
 import { AssetDetailDrawer } from './components/digitaltwin/AssetDetailDrawer';
+import { AssetRegistryPanel } from './components/digitaltwin/AssetRegistryPanel';
+import { SensorTable } from './components/digitaltwin/SensorTable';
+import { StationHealthPanel } from './components/digitaltwin/StationHealthPanel';
 import { EnergyManagement } from './components/energy/EnergyManagement';
 import { EquipmentHealth } from './components/equipment/EquipmentHealth';
 import { SmartLogistics } from './components/logistics/SmartLogistics';
@@ -57,7 +60,6 @@ export const App: React.FC = () => {
   const [activeRole, setActiveRole] = useState('National Operator');
   const [showEmergencyModal, setShowEmergencyModal] = useState(false);
   const [showDemoTour, setShowDemoTour] = useState(false);
-  const [thermalOverlay, setThermalOverlay] = useState(false);
   const [vibrationOverlay, setVibrationOverlay] = useState(false);
   const [showResetDemoModal, setShowResetDemoModal] = useState(false);
   const [resetDemoLoading, setResetDemoLoading] = useState(false);
@@ -253,6 +255,14 @@ export const App: React.FC = () => {
     setSelectedAsset(null);
     setActiveDecision(null);
     setDecisionError(null);
+  };
+
+  // "Locate in Digital Twin" (high priority): navigates to the 3D Digital Twin tab and
+  // selects the asset — TwinCanvas3D reacts to selectedAsset changing by flying the camera
+  // to the asset's real GLB anchor and highlighting it, wherever selection came from.
+  const handleLocateInDigitalTwin = (asset: Asset) => {
+    setActiveTab('digitaltwin');
+    handleSelectAsset(asset);
   };
 
   // AI Recommendation -> Simulation -> Human Approval -> Action
@@ -501,10 +511,10 @@ export const App: React.FC = () => {
               <div className="glass-panel" style={{ padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0, color: '#fff' }}>
-                    {currentStation.name} — Full Interactive 3D Digital Twin Architecture
+                    {currentStation.name} — Operational Digital Twin
                   </h2>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                    Physical stilt elevation, solar array, helipad, radome and generator modules with raycast inspection
+                    Real photogrammetry model, spatially-anchored assets, telemetry, health and simulation, connected
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -525,17 +535,36 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              <div style={{ flex: 1, borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
-                <TwinCanvas3D
-                  stationId={currentStation.stationId}
-                  assets={stationAssets}
-                  selectedAsset={selectedAsset}
-                  onSelectAsset={handleSelectAsset}
-                  thermalOverlay={thermalOverlay}
-                  vibrationOverlay={vibrationOverlay}
-                  onToggleThermal={() => setThermalOverlay(prev => !prev)}
-                  onToggleVibration={() => setVibrationOverlay(prev => !prev)}
-                />
+              <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16, minHeight: 0 }}>
+                <div style={{ borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+                  <TwinCanvas3D
+                    stationId={currentStation.stationId}
+                    assets={stationAssets}
+                    station={currentStation}
+                    alerts={alerts}
+                    unacknowledgedAlertsCount={alerts.filter(a => !a.acknowledged).length}
+                    selectedAsset={selectedAsset}
+                    onSelectAsset={handleSelectAsset}
+                    vibrationOverlay={vibrationOverlay}
+                    onToggleVibration={() => setVibrationOverlay(prev => !prev)}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', minHeight: 0 }}>
+                  <AssetRegistryPanel
+                    assets={stationAssets}
+                    station={currentStation}
+                    selectedAssetId={selectedAsset?.assetId}
+                    onSelectAsset={handleSelectAsset}
+                  />
+                  <StationHealthPanel
+                    risk={crossDomainRisk}
+                    loading={riskLoading}
+                    station={currentStation}
+                    unacknowledgedCriticalCount={alerts.filter(a => !a.acknowledged && (a.level === 'critical' || a.level === 'emergency')).length}
+                  />
+                  <SensorTable assets={stationAssets} />
+                </div>
               </div>
             </div>
           )}
@@ -568,7 +597,7 @@ export const App: React.FC = () => {
               alerts={stationAlerts}
               assets={stationAssets}
               onAcknowledgeAlert={handleAcknowledgeAlert}
-              onSelectAsset={handleSelectAsset}
+              onLocateInDigitalTwin={handleLocateInDigitalTwin}
               onCreateWorkOrder={(a) => {
                 handleCreateWorkOrder({ assetId: a.assetId, title: `Resolution for Alert on ${a.name}` });
               }}
@@ -590,7 +619,14 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'copilot' && (
-            <AICopilot station={currentStation} />
+            <AICopilot
+              station={currentStation}
+              assets={stationAssets}
+              selectedAsset={selectedAsset}
+              onLocateInDigitalTwin={handleLocateInDigitalTwin}
+              onCreateWorkOrder={(a) => handleCreateWorkOrder({ assetId: a.assetId, title: `AI Copilot-flagged review of ${a.name}` })}
+              onNavigateTab={setActiveTab}
+            />
           )}
 
           {activeTab === 'reports' && (
@@ -612,6 +648,7 @@ export const App: React.FC = () => {
             handleCloseAssetDrawer();
             handleCreateWorkOrder({ assetId: a.assetId, title: `Overhaul & Inspection of ${a.name}` });
           }}
+          onLocateInDigitalTwin={handleLocateInDigitalTwin}
           activeRole={activeRole}
           decision={activeDecision}
           decisionLoading={decisionLoading}

@@ -7,7 +7,7 @@ interface AlertEngineProps {
   alerts: Alert[];
   assets: Asset[];
   onAcknowledgeAlert: (alertId: string) => void;
-  onSelectAsset: (asset: Asset) => void;
+  onLocateInDigitalTwin: (asset: Asset) => void;
   onCreateWorkOrder: (asset: Asset) => void;
 }
 
@@ -15,7 +15,7 @@ export const AlertEngine: React.FC<AlertEngineProps> = ({
   alerts,
   assets,
   onAcknowledgeAlert,
-  onSelectAsset,
+  onLocateInDigitalTwin,
   onCreateWorkOrder
 }) => {
   const [filterLevel, setFilterLevel] = useState<string>('all');
@@ -163,9 +163,9 @@ export const AlertEngine: React.FC<AlertEngineProps> = ({
                       <button
                         className="btn btn-cyan"
                         style={{ padding: '5px 12px', fontSize: '0.75rem' }}
-                        onClick={() => onSelectAsset(associatedAsset)}
+                        onClick={() => onLocateInDigitalTwin(associatedAsset)}
                       >
-                        Inspect in 3D Twin <ArrowUpRight size={13} />
+                        Locate in Digital Twin <ArrowUpRight size={13} />
                       </button>
                       <button
                         className="btn btn-primary"

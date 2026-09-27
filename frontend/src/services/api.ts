@@ -426,12 +426,12 @@ export const api = {
     };
   },
 
-  async queryCopilot(prompt: string, stationId: 'BHARATI' | 'MAITRI' = 'BHARATI'): Promise<CopilotMessage> {
+  async queryCopilot(prompt: string, stationId: 'BHARATI' | 'MAITRI' = 'BHARATI', assetId?: string): Promise<CopilotMessage> {
     try {
       const res = await fetch(`${API_BASE}/ai/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, stationId })
+        body: JSON.stringify({ prompt, stationId, context: assetId ? { assetId } : undefined })
       });
       if (res.ok) {
         const data = await res.json();
