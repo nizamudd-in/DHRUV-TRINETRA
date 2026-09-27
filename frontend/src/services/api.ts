@@ -1,6 +1,10 @@
 import { Station, Asset, Alert, InventoryItem, WorkOrder, SimulationRequest, SimulationResult, CopilotMessage, EdgeStatus, ActionDecision, AuditEvent, CrossDomainRisk, FailureCascade, AssetHealthDetail, StationHistory, DemoResetSummary } from '../types';
 
-const API_BASE = '/api';
+// In local dev this stays '/api' and rides Vite's dev-server proxy (see vite.config.ts).
+// That proxy only exists in dev — a production static build has no proxy, so when the
+// frontend and backend are deployed as separate services (e.g. two Render services on
+// different domains), VITE_API_BASE_URL must be set at build time to the real backend URL.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
 
 // Fallback in-memory seed data
 export const initialStations: Station[] = [
