@@ -27,6 +27,10 @@ class Station(BaseModel):
     powerLoadKw: float = 345.0
     powerCapacityKw: float = 600.0
     batterySoc: float = 84.0
+    emergencyActive: bool = False
+    protectedLoadKw: float = 0.0
+    shedLoadKw: float = 0.0
+    emergencyStrategy: Optional[str] = None  # e.g. SELECTIVE_LOAD_SHED
 
 class TelemetryReading(BaseModel):
     assetId: str
@@ -121,6 +125,11 @@ class SimulationResult(BaseModel):
     riskLevel: str
     criticalLoadsAffected: List[str]
     mitigationStrategy: List[str]
+    # Optional fields populated only by load-shedding style scenarios (e.g. emergency triage)
+    protectedLoadKw: Optional[float] = None
+    shedLoadKw: Optional[float] = None
+    projectedBatterySoc: Optional[float] = None
+    standbyGeneratorId: Optional[str] = None
 
 class CopilotQuery(BaseModel):
     prompt: str
@@ -133,6 +142,93 @@ class CopilotResponse(BaseModel):
     contributingFactors: List[str]
     recommendedActions: List[str]
     suggestedFollowups: List[str]
+
+class ActionDecision(BaseModel):
+    id: str
+    stationId: str
+    assetId: Optional[str] = None  # None for station-level decisions (e.g. emergency triage)
+    trigger: str
+    detectedIssue: str
+    risk: str  # Low, Medium, High, Critical
+    explanation: str
+    recommendation: str
+    proposedAction: str  # NONE, OFFLINE_FOR_MAINTENANCE, SCHEDULE_MAINTENANCE, EMERGENCY_TRIAGE
+    expectedImpact: str
+    requiredApproval: str  # role name, "" if no approval needed
+    simulationRequest: Optional[SimulationRequest] = None
+    simulationResult: Optional[SimulationResult] = None
+    approvalStatus: str = "PENDING"  # PENDING, APPROVED, REJECTED, EXECUTED
+    approvedBy: Optional[str] = None
+    executedAt: Optional[str] = None
+    actionResult: Optional[Dict[str, Any]] = None
+    createdAt: str
+
+class RecommendationRequest(BaseModel):
+    stationId: str
+    assetId: str
+
+class StationRequest(BaseModel):
+    stationId: str
+
+class ApprovalRequest(BaseModel):
+    approvedBy: str
+
+class RejectionRequest(BaseModel):
+    rejectedBy: str
+
+class DomainRisk(BaseModel):
+    domain: str  # environment, energy, equipment, logistics, communication
+    severity: str  # LOW, MEDIUM, HIGH, CRITICAL
+    score: float  # 0-100
+    driver: Optional[str] = None  # asset/inventory id most responsible for this domain's score, if any
+    reason: str
+
+class CrossDomainRisk(BaseModel):
+    stationId: str
+    overallRisk: str  # LOW, MEDIUM, HIGH, CRITICAL
+    overallScore: float  # 0-100
+    primaryDriver: str
+    domainRisks: List[DomainRisk]
+    contributingFactors: List[str]
+    affectedSystems: List[str]
+    interactions: List[str]  # cross-domain interaction rules that fired, human-readable
+    recommendations: List[str]
+    calculatedAt: str
+
+class CascadeStep(BaseModel):
+    sequence: int
+    source: str
+    target: str
+    relationship: str  # POWERS, DEPENDS_ON, BACKUP_FOR, SUPPORTS, COOLS, HEATS, COMMUNICATES_WITH, REQUIRES, PROTECTS
+    effect: str
+    severity: str  # LOW, MEDIUM, HIGH, CRITICAL
+    explanation: str
+
+class FailureCascade(BaseModel):
+    cascadeId: str
+    stationId: str
+    triggerAssetId: str
+    triggerAssetName: str
+    triggerFailure: str  # e.g. OFFLINE
+    severity: str  # overall cascade severity, LOW/MEDIUM/HIGH/CRITICAL
+    initialState: Dict[str, Any]
+    cascadeSteps: List[CascadeStep]
+    affectedAssets: List[str]
+    affectedDomains: List[str]
+    lostCapacityKw: float
+    projectedLoadKw: float
+    projectedGenerationMarginKw: float
+    batteryImpact: Dict[str, Any]
+    operationalImpact: List[str]
+    missionImpact: str
+    finalRisk: CrossDomainRisk  # projected Cross-Domain Risk if this failure occurred (not yet applied to real state)
+    mitigations: List[str]
+    generatedAt: str
+
+class CascadeRequest(BaseModel):
+    stationId: str
+    assetId: str
+    failureMode: str = "OFFLINE"
 
 class SyncEvent(BaseModel):
     eventId: str

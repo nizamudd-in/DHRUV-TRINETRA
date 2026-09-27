@@ -113,7 +113,7 @@ export const DemoTourRunner: React.FC<DemoTourRunnerProps> = ({
     {
       stepNumber: 9,
       title: '9. Simulate Satellite Blackout (Store & Forward)',
-      description: 'Cut cloud GSAT-10 satellite connectivity! Demonstrates Edge Resilience: local station gateway buffers all telemetry, sensor readings, and logs safely.',
+      description: 'Cut the SATCOM uplink connectivity! Demonstrates Edge Resilience: local station gateway buffers all telemetry, sensor readings, and logs safely.',
       actionLabel: 'Disconnect Satellite',
       execute: () => {
         onToggleSatellite(false);
@@ -133,8 +133,8 @@ export const DemoTourRunner: React.FC<DemoTourRunnerProps> = ({
     },
     {
       stepNumber: 11,
-      title: '11. Generate Official NCPOR Audit Report',
-      description: 'Generate the certified executive daily briefing and incident log for the Ministry of Earth Sciences with 1 click.',
+      title: '11. Preview NCPOR-Style Audit Report (Prototype)',
+      description: 'Preview a prototype executive daily briefing and incident log, formatted for Ministry of Earth Sciences review.',
       actionLabel: 'Open Report Center',
       execute: () => {
         onNavigateTab('reports');

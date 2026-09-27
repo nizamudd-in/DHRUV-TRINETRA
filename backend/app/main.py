@@ -2,16 +2,20 @@ import asyncio
 import json
 import random
 from typing import List, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .models import (
     Station, Asset, Alert, InventoryItem, WorkOrder,
-    SimulationRequest, SimulationResult, CopilotQuery, CopilotResponse
+    SimulationRequest, SimulationResult, CopilotQuery, CopilotResponse,
+    ActionDecision, RecommendationRequest, ApprovalRequest, RejectionRequest, StationRequest,
+    CrossDomainRisk, FailureCascade, CascadeRequest
 )
 from .simulator import simulator
 from .ai_engine import ai_engine
+from .health_model import calculate_asset_health, get_thresholds
+from .report_generator import build_report_pdf_bytes, build_telemetry_csv, report_filename
 
 app = FastAPI(
     title="PolarTwin Backend API",
@@ -100,6 +104,9 @@ def get_asset_telemetry(asset_id: str):
         })
     history.reverse()
 
+    # Deterministic prototype health model (health_model.py) — NOT a trained ML model.
+    health = calculate_asset_health(target_asset)
+
     return {
         "assetId": target_asset.assetId,
         "name": target_asset.name,
@@ -107,8 +114,15 @@ def get_asset_telemetry(asset_id: str):
         "currentTemperature": target_asset.temperature,
         "currentPowerKw": target_asset.powerKw,
         "healthScore": target_asset.healthScore,
+        "healthStatus": health["status"],
+        "healthComponents": health["components"],
+        "healthFactors": health["factors"],
+        "healthCalculatedAt": health["calculatedAt"],
+        "healthModelApplied": health["modelApplied"],
         "failureRisk": target_asset.failureRisk,
-        "history": history
+        "history": history,
+        "thresholds": get_thresholds(target_asset.type),
+        "sourceType": "SIMULATED"
     }
 
 # --- Energy Endpoints ---
@@ -217,31 +231,125 @@ class CreateWorkOrderReq(BaseModel):
 
 @app.post("/api/workorders")
 def create_work_order(req: CreateWorkOrderReq):
-    new_wo = WorkOrder(
-        orderId=f"WO-2026-{random.randint(100, 999)}",
-        stationId=req.stationId,
-        assetId=req.assetId,
-        title=req.title,
-        priority=req.priority,
-        status="detected",
-        assignedTechnician=req.assignedTechnician,
-        estimatedHours=req.estimatedHours,
-        requiredSpares=req.requiredSpares,
-        checklist=[
-            {"item": "Review safety guidelines and issue thermal outer gear", "done": False},
-            {"item": "Verify isolation and lock-out/tag-out on target asset", "done": False},
-            {"item": "Perform mechanical/electrical maintenance procedures", "done": False},
-            {"item": "Test run asset for 30 minutes and capture vibration spectra", "done": False}
-        ],
-        createdAt="Just now"
+    return simulator.create_work_order(
+        station_id=req.stationId, asset_id=req.assetId, title=req.title,
+        priority=req.priority, assigned_technician=req.assignedTechnician,
+        estimated_hours=req.estimatedHours, required_spares=req.requiredSpares
     )
-    simulator.work_orders.insert(0, new_wo)
-    return new_wo
+
+# --- AI Recommendation -> Simulation -> Human Approval -> Action Decisions ---
+@app.post("/api/decisions/recommend", response_model=ActionDecision)
+def recommend_decision(req: RecommendationRequest):
+    try:
+        return ai_engine.generate_recommendation(req.stationId, req.assetId)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/api/decisions/recommend-emergency", response_model=ActionDecision)
+def recommend_emergency_decision(req: StationRequest):
+    try:
+        return ai_engine.generate_emergency_recommendation(req.stationId)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.get("/api/decisions", response_model=List[ActionDecision])
+def list_decisions(station_id: Optional[str] = None, asset_id: Optional[str] = None):
+    items = list(simulator.decisions.values())
+    if station_id:
+        items = [d for d in items if d.stationId == station_id.upper()]
+    if asset_id:
+        items = [d for d in items if d.assetId == asset_id.upper()]
+    return items
+
+@app.get("/api/decisions/{decision_id}", response_model=ActionDecision)
+def get_decision(decision_id: str):
+    dec = simulator.decisions.get(decision_id)
+    if not dec:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return dec
+
+@app.post("/api/decisions/{decision_id}/simulate", response_model=ActionDecision)
+def simulate_decision(decision_id: str):
+    try:
+        return ai_engine.simulate_decision(decision_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/decisions/{decision_id}/approve", response_model=ActionDecision)
+def approve_decision(decision_id: str, req: ApprovalRequest):
+    try:
+        return ai_engine.approve_decision(decision_id, req.approvedBy)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/decisions/{decision_id}/reject", response_model=ActionDecision)
+def reject_decision(decision_id: str, req: RejectionRequest):
+    try:
+        return ai_engine.reject_decision(decision_id, req.rejectedBy)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# --- Cross-Domain Risk Engine ---
+@app.get("/api/risk/{station_id}", response_model=CrossDomainRisk)
+def get_cross_domain_risk(station_id: str):
+    try:
+        return ai_engine.calculate_cross_domain_risk(station_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# --- Reports: real PDF/CSV generated server-side from live simulator state ---
+@app.get("/api/reports/{station_id}/pdf")
+def get_report_pdf(station_id: str):
+    try:
+        pdf_bytes = build_report_pdf_bytes(station_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    filename = report_filename(station_id, "pdf")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+@app.get("/api/reports/{station_id}/csv")
+def get_report_csv(station_id: str):
+    try:
+        csv_text = build_telemetry_csv(station_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    filename = report_filename(station_id, "csv")
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+# --- Lightweight Prototype Audit Trail ---
+@app.get("/api/audit")
+def get_audit(station_id: Optional[str] = None, asset_id: Optional[str] = None):
+    items = simulator.audit_log
+    if station_id:
+        sid = station_id.upper()
+        items = [e for e in items if e["stationId"] == sid]
+    if asset_id:
+        aid = asset_id.upper()
+        items = [e for e in items if e.get("assetId") == aid]
+    return items
 
 # --- Simulation Endpoint ---
 @app.post("/api/simulation/run", response_model=SimulationResult)
 def run_simulation(req: SimulationRequest):
     return ai_engine.run_simulation(req)
+
+# --- Failure Cascade Engine ---
+@app.post("/api/simulation/cascade", response_model=FailureCascade)
+def simulate_failure_cascade(req: CascadeRequest):
+    try:
+        return ai_engine.simulate_failure_cascade(req.stationId, req.assetId, req.failureMode)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 # --- AI Copilot Endpoint ---
 @app.post("/api/ai/query", response_model=CopilotResponse)
@@ -281,6 +389,38 @@ def inject_anomaly(req: AnomalyReq):
 @app.post("/api/demo/reset-anomaly")
 def reset_anomaly(req: AnomalyReq):
     return simulator.reset_anomaly(req.assetId)
+
+@app.post("/api/demo/reset")
+def reset_demo():
+    """Global demo reset — restores BOTH stations (all equipment, alerts, decisions,
+    work orders, inventory, communication/sync queue, audit log) to baseline in one
+    real backend state reset. Not a browser reload."""
+    return simulator.reset_all()
+
+# --- Station-level historical trend (for Energy/Environment charts) ---
+@app.get("/api/stations/{station_id}/history")
+def get_station_history(station_id: str):
+    sid = station_id.upper()
+    if sid not in simulator.stations:
+        raise HTTPException(status_code=404, detail="Station not found")
+    st = simulator.stations[sid]
+    history = []
+    for i in range(24):
+        hours_ago = 23 - i
+        jitter = hours_ago > 0
+        history.append({
+            "time": f"{hours_ago}h ago" if hours_ago else "Current",
+            "powerLoadKw": round(max(0.0, st.powerLoadKw + (random.uniform(-15.0, 15.0) if jitter else 0.0)), 1),
+            "batterySoc": round(min(100.0, max(0.0, st.batterySoc + (random.uniform(-3.0, 3.0) if jitter else 0.0))), 1),
+            "currentTemp": round(st.currentTemp + (random.uniform(-2.5, 2.5) if jitter else 0.0), 1),
+            "windSpeedKts": round(max(0.0, st.windSpeedKts + (random.uniform(-6.0, 6.0) if jitter else 0.0)), 1),
+        })
+    return {
+        "stationId": sid,
+        "sourceType": "SIMULATED",
+        "note": "Simulated telemetry trend generated by the POLAR-TWIN prototype simulator, varying around current live station state.",
+        "history": history
+    }
 
 # --- Real-time WebSocket Telemetry ---
 @app.websocket("/ws/telemetry")

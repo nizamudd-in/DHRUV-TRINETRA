@@ -24,6 +24,10 @@ export interface Station {
   powerLoadKw: number;
   powerCapacityKw: number;
   batterySoc: number;
+  emergencyActive: boolean;
+  protectedLoadKw: number;
+  shedLoadKw: number;
+  emergencyStrategy?: string | null;
 }
 
 export interface Asset {
@@ -44,6 +48,28 @@ export interface Asset {
   failureRisk: 'Low' | 'Medium' | 'High' | 'Critical';
   recommendedAction: string;
   position3D: [number, number, number];
+}
+
+// Result of the deterministic prototype health model (backend/app/health_model.py) —
+// NOT a trained ML model. componentScores are each 0-100 ("how healthy is just this factor").
+export interface AssetHealthDetail {
+  assetId: string;
+  name: string;
+  currentVibration: number;
+  currentTemperature: number;
+  currentPowerKw: number;
+  healthScore: number;
+  healthStatus: 'HEALTHY' | 'DEGRADED' | 'AT_RISK' | 'CRITICAL';
+  healthComponents: Record<string, number>;
+  healthFactors: string[];
+  healthCalculatedAt: string;
+  healthModelApplied: boolean;
+  failureRisk: string;
+  history: { time: string; vibration: number; temperature: number; powerKw: number }[];
+  // Same anchor points the health model actually scores against — charts must use
+  // these, never invent their own threshold lines. Keyed by metric name.
+  thresholds: Record<string, { baseline: number; warning: number; critical: number }>;
+  sourceType: 'SIMULATED';
 }
 
 export interface Alert {
@@ -112,6 +138,11 @@ export interface SimulationResult {
   riskLevel: 'LOW' | 'MEDIUM' | 'CRITICAL';
   criticalLoadsAffected: string[];
   mitigationStrategy: string[];
+  // Populated only by load-shedding style scenarios (e.g. emergency triage)
+  protectedLoadKw?: number;
+  shedLoadKw?: number;
+  projectedBatterySoc?: number;
+  standbyGeneratorId?: string | null;
 }
 
 export interface CopilotMessage {
@@ -123,6 +154,145 @@ export interface CopilotMessage {
   contributingFactors?: string[];
   recommendedActions?: string[];
   suggestedFollowups?: string[];
+}
+
+export interface ActionDecision {
+  id: string;
+  stationId: 'BHARATI' | 'MAITRI';
+  assetId?: string | null;  // null/absent for station-level decisions (e.g. emergency triage)
+  trigger: string;
+  detectedIssue: string;
+  risk: 'Low' | 'Medium' | 'High' | 'Critical';
+  explanation: string;
+  recommendation: string;
+  proposedAction: 'NONE' | 'OFFLINE_FOR_MAINTENANCE' | 'SCHEDULE_MAINTENANCE' | 'EMERGENCY_TRIAGE';
+  expectedImpact: string;
+  requiredApproval: string;
+  simulationRequest?: SimulationRequest;
+  simulationResult?: SimulationResult;
+  approvalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXECUTED';
+  approvedBy?: string;
+  executedAt?: string;
+  actionResult?: {
+    assetStatus?: string;
+    backupActivated?: string | null;
+    standbyActivated?: string | null;
+    workOrderId?: string;
+    emergencyActive?: boolean;
+    loadKw?: number;
+    shedLoadKw?: number;
+    protectedLoadKw?: number;
+    batterySoc?: number;
+    previousState?: Record<string, any>;
+    resultingState?: Record<string, any>;
+  };
+  createdAt: string;
+}
+
+export type RiskSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface DomainRisk {
+  domain: 'environment' | 'energy' | 'equipment' | 'logistics' | 'communication';
+  severity: RiskSeverity;
+  score: number;
+  driver?: string | null;
+  reason: string;
+}
+
+export interface CrossDomainRisk {
+  stationId: 'BHARATI' | 'MAITRI';
+  overallRisk: RiskSeverity;
+  overallScore: number;
+  primaryDriver: string;
+  domainRisks: DomainRisk[];
+  contributingFactors: string[];
+  affectedSystems: string[];
+  interactions: string[];
+  recommendations: string[];
+  calculatedAt: string;
+}
+
+export interface CascadeStep {
+  sequence: number;
+  source: string;
+  target: string;
+  relationship: 'POWERS' | 'DEPENDS_ON' | 'BACKUP_FOR' | 'SUPPORTS' | 'COOLS' | 'HEATS' | 'COMMUNICATES_WITH' | 'REQUIRES' | 'PROTECTS';
+  effect: string;
+  severity: RiskSeverity;
+  explanation: string;
+}
+
+export interface FailureCascade {
+  cascadeId: string;
+  stationId: 'BHARATI' | 'MAITRI';
+  triggerAssetId: string;
+  triggerAssetName: string;
+  triggerFailure: string;
+  severity: RiskSeverity;
+  initialState: Record<string, any>;
+  cascadeSteps: CascadeStep[];
+  affectedAssets: string[];
+  affectedDomains: string[];
+  lostCapacityKw: number;
+  projectedLoadKw: number;
+  projectedGenerationMarginKw: number;
+  batteryImpact: {
+    powerGapKw: number;
+    currentSoc: number;
+    projectedSoc: number;
+    bufferHours: number | null;
+    criticalDependency: boolean;
+  };
+  operationalImpact: string[];
+  missionImpact: string;
+  finalRisk: CrossDomainRisk;
+  mitigations: string[];
+  generatedAt: string;
+}
+
+export interface AuditEvent {
+  timestamp: string;
+  stationId: string;
+  assetId?: string | null;
+  action: string;
+  actor: string;
+  decisionId?: string;
+  result?: string;
+  detail?: Record<string, any> | null;
+}
+
+export interface StationHistoryPoint {
+  time: string;
+  powerLoadKw: number;
+  batterySoc: number;
+  currentTemp: number;
+  windSpeedKts: number;
+}
+
+export interface StationHistory {
+  stationId: string;
+  sourceType: 'SIMULATED';
+  note: string;
+  history: StationHistoryPoint[];
+}
+
+export interface AssetTelemetryPoint {
+  time: string;
+  vibration: number;
+  temperature: number;
+  powerKw: number;
+}
+
+// A data source classification for the reusable <DataSourceBadge /> — see Phase 4
+// (see also AssetHealthDetail.healthModelApplied / .thresholds for the health model's
+// own transparency fields, added by the P2 health-model task).
+export type DataSourceKind = 'PUBLIC' | 'SIMULATED' | 'PROTOTYPE' | 'MIXED';
+
+export interface DemoResetSummary {
+  status: string;
+  stations: string[];
+  reset_items: string[];
+  timestamp: string;
 }
 
 export interface EdgeStatus {

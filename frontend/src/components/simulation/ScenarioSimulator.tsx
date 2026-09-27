@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Station, SimulationRequest, SimulationResult } from '../../types';
 import { Sliders, Play, AlertTriangle, ShieldCheck, Zap, Fuel, BatteryCharging, CheckCircle, RefreshCw } from 'lucide-react';
 import { api } from '../../services/api';
+import { DataSourceBadge } from '../common/DataSourceBadge';
 
 interface ScenarioSimulatorProps {
   station: Station;
@@ -35,11 +36,14 @@ export const ScenarioSimulator: React.FC<ScenarioSimulatorProps> = ({ station })
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* Top Banner */}
       <div className="glass-panel" style={{ padding: '20px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-          <Sliders size={22} color="var(--accent-cyan)" />
-          <h2 style={{ fontSize: '1.2rem', fontWeight: 700, margin: 0 }}>
-            Antarctic Operational Scenario Sandbox & What-If Simulation Engine
-          </h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Sliders size={22} color="var(--accent-cyan)" />
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 700, margin: 0 }}>
+              Antarctic Operational Scenario Sandbox & What-If Simulation Engine
+            </h2>
+          </div>
+          <DataSourceBadge kind="PROTOTYPE" label="Derived: physics-informed simulation" detail="Results are computed by the POLAR-TWIN prototype's deterministic simulation model, not measured or forecast from live station data." />
         </div>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
           Evaluate extreme polar contingency scenarios before committing field decisions. Test cold snaps, generator trips, and winter shipping disruptions against station life support models.

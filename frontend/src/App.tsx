@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { ActiveTab, Station, Asset, Alert, InventoryItem, WorkOrder, EdgeStatus } from './types';
+import { ActiveTab, Station, Asset, Alert, InventoryItem, WorkOrder, EdgeStatus, ActionDecision, CrossDomainRisk } from './types';
 import { api, initialStations, initialAssets, initialAlerts, initialInventory, initialWorkOrders } from './services/api';
 import { Header } from './components/common/Header';
 import { Sidebar } from './components/common/Sidebar';
 import { MissionControlDashboard } from './components/dashboard/MissionControlDashboard';
 import { TwinCanvas3D } from './components/digitaltwin/TwinCanvas3D';
 import { AssetDetailDrawer } from './components/digitaltwin/AssetDetailDrawer';
+import { AssetRegistryPanel } from './components/digitaltwin/AssetRegistryPanel';
+import { SensorTable } from './components/digitaltwin/SensorTable';
+import { StationHealthPanel } from './components/digitaltwin/StationHealthPanel';
 import { EnergyManagement } from './components/energy/EnergyManagement';
 import { EquipmentHealth } from './components/equipment/EquipmentHealth';
 import { SmartLogistics } from './components/logistics/SmartLogistics';
@@ -17,6 +20,8 @@ import { AICopilot } from './components/ai/AICopilot';
 import { ReportCenter } from './components/reports/ReportCenter';
 import { EmergencyModeModal } from './components/emergency/EmergencyModeModal';
 import { DemoTourRunner } from './components/demo/DemoTourRunner';
+import { ResetDemoModal } from './components/common/ResetDemoModal';
+import { ErrorState } from './components/common/StateViews';
 import './styles/theme.css';
 
 export const App: React.FC = () => {
@@ -28,6 +33,21 @@ export const App: React.FC = () => {
   const [inventory, setInventory] = useState<InventoryItem[]>(initialInventory);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>(initialWorkOrders);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [activeDecision, setActiveDecision] = useState<ActionDecision | null>(null);
+  const [decisionLoading, setDecisionLoading] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [demoAnomalyAssetId, setDemoAnomalyAssetId] = useState<string | null>(null);
+  // Kept separate from activeDecision above: the Emergency modal and the asset drawer can
+  // both be open independently, and must not stomp on each other's in-progress decision.
+  const [activeEmergencyDecision, setActiveEmergencyDecision] = useState<ActionDecision | null>(null);
+  const [emergencyDecisionLoading, setEmergencyDecisionLoading] = useState(false);
+  const [emergencyDecisionError, setEmergencyDecisionError] = useState<string | null>(null);
+  // Cross-Domain Risk: backend is the sole source of truth, never computed/cached client-side.
+  // riskRefreshTrigger is bumped after any action that mutates station state, forcing a re-fetch.
+  const [crossDomainRisk, setCrossDomainRisk] = useState<CrossDomainRisk | null>(null);
+  const [riskLoading, setRiskLoading] = useState(false);
+  const [riskError, setRiskError] = useState<string | null>(null);
+  const [riskRefreshTrigger, setRiskRefreshTrigger] = useState(0);
   const [edgeStatus, setEdgeStatus] = useState<EdgeStatus>({
     is_online: true,
     status: 'ONLINE',
@@ -40,12 +60,16 @@ export const App: React.FC = () => {
   const [activeRole, setActiveRole] = useState('National Operator');
   const [showEmergencyModal, setShowEmergencyModal] = useState(false);
   const [showDemoTour, setShowDemoTour] = useState(false);
-  const [thermalOverlay, setThermalOverlay] = useState(false);
   const [vibrationOverlay, setVibrationOverlay] = useState(false);
+  const [showResetDemoModal, setShowResetDemoModal] = useState(false);
+  const [resetDemoLoading, setResetDemoLoading] = useState(false);
+  const [resetDemoError, setResetDemoError] = useState<string | null>(null);
+  const [initialLoadError, setInitialLoadError] = useState<string | null>(null);
 
-  // Initial Data Load
-  useEffect(() => {
-    const loadData = async () => {
+  // Initial Data Load — falls back to bundled initial* mock state on failure so the
+  // app never renders blank; the banner below surfaces the failure instead.
+  const loadInitialData = React.useCallback(async () => {
+    try {
       const [sts, asts, alts, inv, wos] = await Promise.all([
         api.getStations(),
         api.getAssets(),
@@ -58,9 +82,27 @@ export const App: React.FC = () => {
       setAlerts(alts);
       setInventory(inv);
       setWorkOrders(wos);
-    };
-    loadData();
+      setInitialLoadError(null);
+    } catch (e: any) {
+      setInitialLoadError(e?.message || 'Could not reach the POLAR-TWIN backend. Showing last known data.');
+    }
   }, []);
+
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
+
+  // Cross-Domain Risk: re-fetch whenever the active station changes or riskRefreshTrigger is bumped
+  // (after anomaly inject/reset or any approved decision — see those handlers below).
+  useEffect(() => {
+    let cancelled = false;
+    setRiskLoading(true);
+    api.getCrossDomainRisk(activeStationId)
+      .then(r => { if (!cancelled) { setCrossDomainRisk(r); setRiskError(null); } })
+      .catch(e => { if (!cancelled) setRiskError(e?.message || 'Risk calculation unavailable.'); })
+      .finally(() => { if (!cancelled) setRiskLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeStationId, riskRefreshTrigger]);
 
   // Continuous subtle telemetry pulse (life-like simulator)
   useEffect(() => {
@@ -109,9 +151,22 @@ export const App: React.FC = () => {
     setEdgeStatus(res);
   };
 
+  // Resolve which generator the demo anomaly controller targets for the active station,
+  // dynamically (never a hardcoded 'GEN-02'/'M-GEN-01' literal) — prefers whichever
+  // generator is already flagged warning/critical, falling back to the station's first generator.
+  const resolveAnomalyAssetId = (): string => {
+    const atRisk = stationAssets.find(a => a.type === 'generator' && (a.status === 'warning' || a.status === 'critical'));
+    if (atRisk) return atRisk.assetId;
+    const anyGen = stationAssets.find(a => a.type === 'generator');
+    return anyGen ? anyGen.assetId : (stationAssets[0]?.assetId || '');
+  };
+
   // Anomaly Injection
   const handleInjectAnomaly = async () => {
-    await api.injectAnomaly('GEN-02');
+    const targetId = resolveAnomalyAssetId();
+    if (!targetId) return;
+    setDemoAnomalyAssetId(targetId);
+    await api.injectAnomaly(targetId);
     const [asts, alts, sts] = await Promise.all([
       api.getAssets(),
       api.getAlerts(),
@@ -120,20 +175,245 @@ export const App: React.FC = () => {
     setAssets(asts);
     setAlerts(alts);
     setStations(sts);
-    const g2 = asts.find(a => a.assetId === 'GEN-02');
-    if (g2) setSelectedAsset(g2);
+    setRiskRefreshTrigger(t => t + 1);
+    const target = asts.find(a => a.assetId === targetId);
+    if (target) handleSelectAsset(target);
   };
 
   const handleResetAnomaly = async () => {
-    await api.resetAnomaly('GEN-02');
-    const [asts, alts, sts] = await Promise.all([
+    const targetId = demoAnomalyAssetId || resolveAnomalyAssetId();
+    if (!targetId) return;
+    await api.resetAnomaly(targetId);
+    const [asts, alts, sts, wos] = await Promise.all([
       api.getAssets(),
       api.getAlerts(),
-      api.getStations()
+      api.getStations(),
+      api.getWorkOrders()
     ]);
     setAssets(asts);
     setAlerts(alts);
     setStations(sts);
+    setWorkOrders(wos);
+    setRiskRefreshTrigger(t => t + 1);
+    if (activeDecision && activeDecision.assetId === targetId) {
+      setActiveDecision(null);
+      setDecisionError(null);
+    }
+    setDemoAnomalyAssetId(null);
+  };
+
+  // Global Demo Reset (P3 Phase 7): a REAL backend state reset covering both stations,
+  // not a browser reload and not scoped to a single asset like handleResetAnomaly above.
+  const handleResetDemo = async () => {
+    setResetDemoLoading(true);
+    setResetDemoError(null);
+    try {
+      await api.resetDemo();
+      const [sts, asts, alts, inv, wos] = await Promise.all([
+        api.getStations(),
+        api.getAssets(),
+        api.getAlerts(),
+        api.getInventory(),
+        api.getWorkOrders()
+      ]);
+      setStations(sts);
+      setAssets(asts);
+      setAlerts(alts);
+      setInventory(inv);
+      setWorkOrders(wos);
+      setEdgeStatus({
+        is_online: true,
+        status: 'ONLINE',
+        queue_depth: 0,
+        last_sync: '07:42 IST (Nominal)',
+        station_edge_nodes: []
+      });
+      setSelectedAsset(null);
+      setActiveDecision(null);
+      setDecisionError(null);
+      setActiveEmergencyDecision(null);
+      setEmergencyDecisionError(null);
+      setShowEmergencyModal(false);
+      setDemoAnomalyAssetId(null);
+      setRiskRefreshTrigger(t => t + 1);
+      setShowResetDemoModal(false);
+    } catch (e: any) {
+      setResetDemoError(e?.message || 'Reset failed. Please try again.');
+    } finally {
+      setResetDemoLoading(false);
+    }
+  };
+
+  // Asset selection: switching to a different asset invalidates any decision panel in view
+  const handleSelectAsset = (asset: Asset) => {
+    setSelectedAsset(asset);
+    setActiveDecision(prev => (prev && prev.assetId === asset.assetId ? prev : null));
+    setDecisionError(null);
+  };
+
+  const handleCloseAssetDrawer = () => {
+    setSelectedAsset(null);
+    setActiveDecision(null);
+    setDecisionError(null);
+  };
+
+  // "Locate in Digital Twin" (high priority): navigates to the 3D Digital Twin tab and
+  // selects the asset — TwinCanvas3D reacts to selectedAsset changing by flying the camera
+  // to the asset's real GLB anchor and highlighting it, wherever selection came from.
+  const handleLocateInDigitalTwin = (asset: Asset) => {
+    setActiveTab('digitaltwin');
+    handleSelectAsset(asset);
+  };
+
+  // AI Recommendation -> Simulation -> Human Approval -> Action
+  const handleRequestRecommendation = async (asset: Asset) => {
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const dec = await api.requestRecommendation(asset.stationId, asset.assetId);
+      setActiveDecision(dec);
+    } catch (e: any) {
+      setDecisionError(e?.message || 'Failed to reach AI recommendation service.');
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  // Cross-Domain Risk -> Primary Driver -> AI Recommendation: connects the risk panel to the
+  // existing per-asset decision flow (opens the drawer and immediately requests a recommendation
+  // for the asset the risk engine identified as the primary driver).
+  const handleInspectRiskDriver = (assetId: string) => {
+    const asset = stationAssets.find(a => a.assetId === assetId);
+    if (!asset) return;
+    handleSelectAsset(asset);
+    handleRequestRecommendation(asset);
+  };
+
+  const handleRunDecisionSimulation = async () => {
+    if (!activeDecision) return;
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const dec = await api.simulateDecision(activeDecision.id);
+      setActiveDecision(dec);
+    } catch (e: any) {
+      setDecisionError(e?.message || 'Simulation failed.');
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  const handleApproveDecision = async () => {
+    if (!activeDecision) return;
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const dec = await api.approveDecision(activeDecision.id, activeRole);
+      setActiveDecision(dec);
+      const [asts, alts, sts, wos] = await Promise.all([
+        api.getAssets(),
+        api.getAlerts(),
+        api.getStations(),
+        api.getWorkOrders()
+      ]);
+      setAssets(asts);
+      setAlerts(alts);
+      setStations(sts);
+      setWorkOrders(wos);
+      setRiskRefreshTrigger(t => t + 1);
+      const updatedAsset = asts.find(a => a.assetId === dec.assetId);
+      if (updatedAsset) setSelectedAsset(updatedAsset);
+    } catch (e: any) {
+      setDecisionError(e?.message || 'Approval failed.');
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  const handleRejectDecision = async () => {
+    if (!activeDecision) return;
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const dec = await api.rejectDecision(activeDecision.id, activeRole);
+      setActiveDecision(dec);
+    } catch (e: any) {
+      setDecisionError(e?.message || 'Rejection failed.');
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  // Emergency Triage: AI Recommendation -> Simulation -> Human Approval -> Action
+  // (same decision/approval architecture as above, kept in a separate state slot — see note above)
+  const handleRequestEmergencyRecommendation = async () => {
+    setEmergencyDecisionLoading(true);
+    setEmergencyDecisionError(null);
+    try {
+      const dec = await api.requestEmergencyRecommendation(activeStationId);
+      setActiveEmergencyDecision(dec);
+    } catch (e: any) {
+      setEmergencyDecisionError(e?.message || 'Failed to reach AI recommendation service.');
+    } finally {
+      setEmergencyDecisionLoading(false);
+    }
+  };
+
+  const handleRunEmergencyDecisionSimulation = async () => {
+    if (!activeEmergencyDecision) return;
+    setEmergencyDecisionLoading(true);
+    setEmergencyDecisionError(null);
+    try {
+      const dec = await api.simulateDecision(activeEmergencyDecision.id);
+      setActiveEmergencyDecision(dec);
+    } catch (e: any) {
+      setEmergencyDecisionError(e?.message || 'Simulation failed.');
+    } finally {
+      setEmergencyDecisionLoading(false);
+    }
+  };
+
+  const handleApproveEmergencyDecision = async () => {
+    if (!activeEmergencyDecision) return;
+    setEmergencyDecisionLoading(true);
+    setEmergencyDecisionError(null);
+    try {
+      const dec = await api.approveDecision(activeEmergencyDecision.id, activeRole);
+      setActiveEmergencyDecision(dec);
+      const [asts, alts, sts] = await Promise.all([
+        api.getAssets(),
+        api.getAlerts(),
+        api.getStations()
+      ]);
+      setAssets(asts);
+      setAlerts(alts);
+      setStations(sts);
+      setRiskRefreshTrigger(t => t + 1);
+    } catch (e: any) {
+      setEmergencyDecisionError(e?.message || 'Approval failed.');
+    } finally {
+      setEmergencyDecisionLoading(false);
+    }
+  };
+
+  const handleRejectEmergencyDecision = async () => {
+    if (!activeEmergencyDecision) return;
+    setEmergencyDecisionLoading(true);
+    setEmergencyDecisionError(null);
+    try {
+      const dec = await api.rejectDecision(activeEmergencyDecision.id, activeRole);
+      setActiveEmergencyDecision(dec);
+    } catch (e: any) {
+      setEmergencyDecisionError(e?.message || 'Rejection failed.');
+    } finally {
+      setEmergencyDecisionLoading(false);
+    }
+  };
+
+  const handleCloseEmergencyModal = () => {
+    setShowEmergencyModal(false);
+    setActiveEmergencyDecision(null);
+    setEmergencyDecisionError(null);
   };
 
   // Acknowledge Alert
@@ -150,7 +430,7 @@ export const App: React.FC = () => {
     });
     setWorkOrders(prev => [newWo, ...prev]);
     setActiveTab('maintenance');
-    if (selectedAsset) setSelectedAsset(null);
+    if (selectedAsset) handleCloseAssetDrawer();
   };
 
   // Update Work Order Status
@@ -179,6 +459,7 @@ export const App: React.FC = () => {
         onStartDemo={() => setShowDemoTour(true)}
         activeRole={activeRole}
         onSelectRole={setActiveRole}
+        onOpenResetDemo={() => setShowResetDemoModal(true)}
       />
 
       {/* Main Workspace Layout: Sidebar + Screen Content */}
@@ -197,6 +478,15 @@ export const App: React.FC = () => {
 
         {/* Content Viewport */}
         <main style={{ flex: 1, padding: '24px', overflowY: 'auto', maxHeight: 'calc(100vh - 68px)' }}>
+          {initialLoadError && (
+            <div style={{ marginBottom: 20 }}>
+              <ErrorState
+                title="Backend connection issue"
+                message={initialLoadError}
+                onRetry={loadInitialData}
+              />
+            </div>
+          )}
           {activeTab === 'dashboard' && (
             <MissionControlDashboard
               station={currentStation}
@@ -204,10 +494,15 @@ export const App: React.FC = () => {
               alerts={stationAlerts}
               inventory={stationInventory}
               onNavigateTab={setActiveTab}
-              onSelectAsset={setSelectedAsset}
+              onSelectAsset={handleSelectAsset}
               onAcknowledgeAlert={handleAcknowledgeAlert}
               onInjectAnomaly={handleInjectAnomaly}
               onResetAnomaly={handleResetAnomaly}
+              risk={crossDomainRisk}
+              riskLoading={riskLoading}
+              riskError={riskError}
+              onInspectRiskDriver={handleInspectRiskDriver}
+              onOpenEmergency={() => setShowEmergencyModal(true)}
             />
           )}
 
@@ -216,10 +511,10 @@ export const App: React.FC = () => {
               <div className="glass-panel" style={{ padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0, color: '#fff' }}>
-                    {currentStation.name} — Full Interactive 3D Digital Twin Architecture
+                    {currentStation.name} — Operational Digital Twin
                   </h2>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                    Physical stilt elevation, solar array, helipad, radome and generator modules with raycast inspection
+                    Real photogrammetry model, spatially-anchored assets, telemetry, health and simulation, connected
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -228,7 +523,7 @@ export const App: React.FC = () => {
                     style={{ padding: '6px 12px', fontSize: '0.75rem' }}
                     onClick={handleInjectAnomaly}
                   >
-                    Inject G-02 Anomaly
+                    Inject Generator Anomaly
                   </button>
                   <button
                     className="btn btn-outline"
@@ -240,31 +535,50 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              <div style={{ flex: 1, borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
-                <TwinCanvas3D
-                  stationId={currentStation.stationId}
-                  assets={stationAssets}
-                  selectedAsset={selectedAsset}
-                  onSelectAsset={setSelectedAsset}
-                  thermalOverlay={thermalOverlay}
-                  vibrationOverlay={vibrationOverlay}
-                  onToggleThermal={() => setThermalOverlay(prev => !prev)}
-                  onToggleVibration={() => setVibrationOverlay(prev => !prev)}
-                />
+              <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16, minHeight: 0 }}>
+                <div style={{ borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+                  <TwinCanvas3D
+                    stationId={currentStation.stationId}
+                    assets={stationAssets}
+                    station={currentStation}
+                    alerts={alerts}
+                    unacknowledgedAlertsCount={alerts.filter(a => !a.acknowledged).length}
+                    selectedAsset={selectedAsset}
+                    onSelectAsset={handleSelectAsset}
+                    vibrationOverlay={vibrationOverlay}
+                    onToggleVibration={() => setVibrationOverlay(prev => !prev)}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', minHeight: 0 }}>
+                  <AssetRegistryPanel
+                    assets={stationAssets}
+                    station={currentStation}
+                    selectedAssetId={selectedAsset?.assetId}
+                    onSelectAsset={handleSelectAsset}
+                  />
+                  <StationHealthPanel
+                    risk={crossDomainRisk}
+                    loading={riskLoading}
+                    station={currentStation}
+                    unacknowledgedCriticalCount={alerts.filter(a => !a.acknowledged && (a.level === 'critical' || a.level === 'emergency')).length}
+                  />
+                  <SensorTable assets={stationAssets} />
+                </div>
               </div>
             </div>
           )}
 
           {activeTab === 'energy' && (
-            <EnergyManagement station={currentStation} />
+            <EnergyManagement station={currentStation} assets={stationAssets} />
           )}
 
           {activeTab === 'equipment' && (
             <EquipmentHealth
               assets={stationAssets}
-              onSelectAsset={setSelectedAsset}
+              onSelectAsset={handleSelectAsset}
               onCreateWorkOrder={(a) => {
-                setSelectedAsset(null);
+                handleCloseAssetDrawer();
                 handleCreateWorkOrder({ assetId: a.assetId, title: `Corrective Maintenance for ${a.name}` });
               }}
             />
@@ -283,7 +597,7 @@ export const App: React.FC = () => {
               alerts={stationAlerts}
               assets={stationAssets}
               onAcknowledgeAlert={handleAcknowledgeAlert}
-              onSelectAsset={setSelectedAsset}
+              onLocateInDigitalTwin={handleLocateInDigitalTwin}
               onCreateWorkOrder={(a) => {
                 handleCreateWorkOrder({ assetId: a.assetId, title: `Resolution for Alert on ${a.name}` });
               }}
@@ -305,7 +619,14 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'copilot' && (
-            <AICopilot station={currentStation} />
+            <AICopilot
+              station={currentStation}
+              assets={stationAssets}
+              selectedAsset={selectedAsset}
+              onLocateInDigitalTwin={handleLocateInDigitalTwin}
+              onCreateWorkOrder={(a) => handleCreateWorkOrder({ assetId: a.assetId, title: `AI Copilot-flagged review of ${a.name}` })}
+              onNavigateTab={setActiveTab}
+            />
           )}
 
           {activeTab === 'reports' && (
@@ -322,11 +643,21 @@ export const App: React.FC = () => {
       {selectedAsset && (
         <AssetDetailDrawer
           asset={selectedAsset}
-          onClose={() => setSelectedAsset(null)}
+          onClose={handleCloseAssetDrawer}
           onCreateWorkOrder={(a) => {
-            setSelectedAsset(null);
+            handleCloseAssetDrawer();
             handleCreateWorkOrder({ assetId: a.assetId, title: `Overhaul & Inspection of ${a.name}` });
           }}
+          onLocateInDigitalTwin={handleLocateInDigitalTwin}
+          activeRole={activeRole}
+          decision={activeDecision}
+          decisionLoading={decisionLoading}
+          decisionError={decisionError}
+          onRequestRecommendation={() => handleRequestRecommendation(selectedAsset)}
+          onRunSimulation={handleRunDecisionSimulation}
+          onApproveDecision={handleApproveDecision}
+          onRejectDecision={handleRejectDecision}
+          onDismissDecision={() => { setActiveDecision(null); setDecisionError(null); }}
         />
       )}
 
@@ -334,7 +665,16 @@ export const App: React.FC = () => {
       {showEmergencyModal && (
         <EmergencyModeModal
           station={currentStation}
-          onClose={() => setShowEmergencyModal(false)}
+          onClose={handleCloseEmergencyModal}
+          activeRole={activeRole}
+          decision={activeEmergencyDecision}
+          decisionLoading={emergencyDecisionLoading}
+          decisionError={emergencyDecisionError}
+          onRequestRecommendation={handleRequestEmergencyRecommendation}
+          onRunSimulation={handleRunEmergencyDecisionSimulation}
+          onApproveDecision={handleApproveEmergencyDecision}
+          onRejectDecision={handleRejectEmergencyDecision}
+          onDismissDecision={() => { setActiveEmergencyDecision(null); setEmergencyDecisionError(null); }}
         />
       )}
 
@@ -345,10 +685,20 @@ export const App: React.FC = () => {
           onNavigateTab={setActiveTab}
           onSelectStation={setActiveStationId}
           onInjectAnomaly={handleInjectAnomaly}
-          onSelectAsset={setSelectedAsset}
+          onSelectAsset={handleSelectAsset}
           assets={stationAssets}
           onToggleSatellite={handleToggleSatellite}
           onClose={() => setShowDemoTour(false)}
+        />
+      )}
+
+      {/* Global Demo Reset Confirmation */}
+      {showResetDemoModal && (
+        <ResetDemoModal
+          loading={resetDemoLoading}
+          error={resetDemoError}
+          onConfirm={handleResetDemo}
+          onClose={() => { setShowResetDemoModal(false); setResetDemoError(null); }}
         />
       )}
     </div>
