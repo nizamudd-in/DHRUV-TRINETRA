@@ -3,12 +3,16 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Asset, Station, Alert } from '../../types';
-import { RefreshCw, X, AlertTriangle, Crosshair, Thermometer, Zap, HeartPulse, Radio, Ghost, PlaySquare, Video } from 'lucide-react';
+import { RefreshCw, X, AlertTriangle, Crosshair, Thermometer, Zap, HeartPulse, Radio, Ghost, PlaySquare, Video, Eye, Workflow, SatelliteDish } from 'lucide-react';
 import { DataSourceBadge } from '../common/DataSourceBadge';
 import {
-  BHARATI_ANCHOR_DEFS, ANCHOR_VERTICAL_OFFSET, BharatiAnchorCategory,
-  resolveAnchorAsset, assetStatusColorHex, healthBandColorHex, categoryBoundsFromAnchors
+  BHARATI_ANCHOR_DEFS, ANCHOR_VERTICAL_OFFSET,
+  resolveAnchorAsset, assetStatusColorHex, healthBandColorHex
 } from './bharatiAssetConfig';
+import {
+  COMMUNICATION_ANCHOR_NAMES, COMMUNICATION_ANCHOR_LIST, COMMUNICATION_PATHS,
+  COMMUNICATION_PATH_COLOR, COMMUNICATION_BACKEND_ASSET_ID, COMMUNICATION_NODE_LABEL
+} from './communicationConfig';
 
 interface TwinCanvas3DProps {
   stationId: 'BHARATI' | 'MAITRI';
@@ -23,73 +27,96 @@ interface TwinCanvas3DProps {
 }
 
 const BHARATI_MODEL_URL = '/models/BHARATI_TEXTURE_TEST.glb';
+const PIPELINE_MODEL_URL = '/models/pipeline.glb';
+const COMMUNICATION_MODEL_URL = '/models/communication.glb';
 
-interface LoadedBharatiModel {
+const BHARATI_ANCHOR_NAME_LIST = BHARATI_ANCHOR_DEFS.map(d => d.anchorName);
+
+interface LoadedGLBModel {
   scene: THREE.Group;
   anchorWorldPositions: Record<string, THREE.Vector3>;
   clusterSize: THREE.Vector3;
 }
 
-// Loaded once per browser session and reused across every mount/tab-switch — the real
-// Bharati photogrammetry scan is 90MB+ and must never be re-fetched/re-parsed just because
-// the user toggled an overlay or switched tabs.
-let bharatiModelPromise: Promise<LoadedBharatiModel> | null = null;
-function loadBharatiModel(onProgress?: (pct: number) => void): Promise<LoadedBharatiModel> {
-  if (!bharatiModelPromise) {
-    const loader = new GLTFLoader();
-    bharatiModelPromise = loader
-      .loadAsync(BHARATI_MODEL_URL, (evt) => {
-        if (onProgress && evt.total) onProgress(Math.round((evt.loaded / evt.total) * 100));
-      })
-      .then((gltf: GLTF) => {
-        gltf.scene.updateMatrixWorld(true);
+// Shared loader: fetches a GLB, recenters it on the real named-anchor empties it contains
+// (not the whole mesh bounding box, so a wide terrain skirt doesn't throw off the framing),
+// and enables shadows. `anchorNames` is model-specific — BHARATI_TEXTURE_TEST.glb and
+// pipeline.glb share the Bharati anchor set (pipeline.glb is missing ANCHOR_MAIN_BUILDING,
+// simply skipped/warned, never invented); communication.glb has its own anchor set
+// (including anchor_communication_room, unique to that file) but the SAME coordinate
+// space/scale, confirmed by inspecting the raw GLB — all three recenter around real
+// reference points and end up comparably framed for the same camera.
+function loadAndRecenterGLB(url: string, anchorNames: string[], onProgress?: (pct: number) => void): Promise<LoadedGLBModel> {
+  const loader = new GLTFLoader();
+  return loader
+    .loadAsync(url, (evt) => {
+      if (onProgress && evt.total) onProgress(Math.round((evt.loaded / evt.total) * 100));
+    })
+    .then((gltf: GLTF) => {
+      gltf.scene.updateMatrixWorld(true);
 
-        const clusterBox = new THREE.Box3();
-        BHARATI_ANCHOR_DEFS.forEach((def) => {
-          const node = gltf.scene.getObjectByName(def.anchorName);
-          if (node) {
-            const wp = new THREE.Vector3();
-            node.getWorldPosition(wp);
-            clusterBox.expandByPoint(wp);
-          } else {
-            console.warn(`Bharati GLB is missing expected anchor: ${def.anchorName}`);
-          }
-        });
-
-        const clusterCenter = clusterBox.isEmpty() ? new THREE.Vector3() : clusterBox.getCenter(new THREE.Vector3());
-        const clusterSize = clusterBox.isEmpty() ? new THREE.Vector3(20, 10, 20) : clusterBox.getSize(new THREE.Vector3());
-        const fullBox = new THREE.Box3().setFromObject(gltf.scene);
-
-        // Recenter on the ANCHOR CLUSTER (the real station footprint), not the whole terrain
-        // scan, so the camera frames the station itself and the existing origin-pivoted orbit
-        // controls stay centered on it.
-        gltf.scene.position.x -= clusterCenter.x;
-        gltf.scene.position.z -= clusterCenter.z;
-        gltf.scene.position.y -= fullBox.min.y;
-        gltf.scene.updateMatrixWorld(true);
-
-        const anchorWorldPositions: Record<string, THREE.Vector3> = {};
-        BHARATI_ANCHOR_DEFS.forEach((def) => {
-          const node = gltf.scene.getObjectByName(def.anchorName);
-          if (node) {
-            const wp = new THREE.Vector3();
-            node.getWorldPosition(wp);
-            anchorWorldPositions[def.anchorName] = wp;
-          }
-        });
-
-        gltf.scene.traverse((obj) => {
-          const mesh = obj as THREE.Mesh;
-          if (mesh.isMesh) {
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
-          }
-        });
-
-        return { scene: gltf.scene, anchorWorldPositions, clusterSize };
+      const clusterBox = new THREE.Box3();
+      anchorNames.forEach((name) => {
+        const node = gltf.scene.getObjectByName(name);
+        if (node) {
+          const wp = new THREE.Vector3();
+          node.getWorldPosition(wp);
+          clusterBox.expandByPoint(wp);
+        } else {
+          console.warn(`${url} is missing expected anchor: ${name}`);
+        }
       });
-  }
+
+      const clusterCenter = clusterBox.isEmpty() ? new THREE.Vector3() : clusterBox.getCenter(new THREE.Vector3());
+      const clusterSize = clusterBox.isEmpty() ? new THREE.Vector3(20, 10, 20) : clusterBox.getSize(new THREE.Vector3());
+      const fullBox = new THREE.Box3().setFromObject(gltf.scene);
+
+      gltf.scene.position.x -= clusterCenter.x;
+      gltf.scene.position.z -= clusterCenter.z;
+      gltf.scene.position.y -= fullBox.min.y;
+      gltf.scene.updateMatrixWorld(true);
+
+      const anchorWorldPositions: Record<string, THREE.Vector3> = {};
+      anchorNames.forEach((name) => {
+        const node = gltf.scene.getObjectByName(name);
+        if (node) {
+          const wp = new THREE.Vector3();
+          node.getWorldPosition(wp);
+          anchorWorldPositions[name] = wp;
+        }
+      });
+
+      gltf.scene.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+        }
+      });
+
+      return { scene: gltf.scene, anchorWorldPositions, clusterSize };
+    });
+}
+
+// Each model is loaded once per browser session and reused across every mount/tab-switch/
+// vision-switch — every GLB here is 60-135MB+ and must never be re-fetched/re-parsed just
+// because the user toggled vision layers or switched tabs.
+let bharatiModelPromise: Promise<LoadedGLBModel> | null = null;
+function loadBharatiModel(onProgress?: (pct: number) => void): Promise<LoadedGLBModel> {
+  if (!bharatiModelPromise) bharatiModelPromise = loadAndRecenterGLB(BHARATI_MODEL_URL, BHARATI_ANCHOR_NAME_LIST, onProgress);
   return bharatiModelPromise;
+}
+
+let pipelineModelPromise: Promise<LoadedGLBModel> | null = null;
+function loadPipelineModel(onProgress?: (pct: number) => void): Promise<LoadedGLBModel> {
+  if (!pipelineModelPromise) pipelineModelPromise = loadAndRecenterGLB(PIPELINE_MODEL_URL, BHARATI_ANCHOR_NAME_LIST, onProgress);
+  return pipelineModelPromise;
+}
+
+let communicationModelPromise: Promise<LoadedGLBModel> | null = null;
+function loadCommunicationModel(onProgress?: (pct: number) => void): Promise<LoadedGLBModel> {
+  if (!communicationModelPromise) communicationModelPromise = loadAndRecenterGLB(COMMUNICATION_MODEL_URL, COMMUNICATION_ANCHOR_LIST, onProgress);
+  return communicationModelPromise;
 }
 
 // Unified clickable hotspot — real telemetry-backed assets, the whole-station marker, and
@@ -111,6 +138,76 @@ interface MarkerVisual {
 }
 
 type VisualizationMode = 'NORMAL' | 'THERMAL' | 'POWER' | 'ASSET_HEALTH' | 'XRAY' | 'ALERTS' | 'REPLAY';
+type VisionLayer = 'FULL' | 'ENGINEERING' | 'COMMUNICATION';
+
+// Zone navigation: camera focus + a MINIMAL flow layer, independent of Vision and Analysis
+// Mode. Anchor names are shared literals — identical across BHARATI_TEXTURE_TEST.glb,
+// pipeline.glb, and communication.glb wherever a given anchor exists in that file (confirmed
+// by inspection). A zone's paths/focus are only ever drawn using anchors that actually
+// resolve in the CURRENTLY active vision's model — communication.glb, for example, has no
+// ANCHOR_MAIN_BUILDING/GEN/FUEL/SHIP/CONTAINER anchors at all, so those zones simply have
+// nothing to show while Communication Vision is active (never invented, never faked).
+type ZoneId = 'MAIN_BUILDING' | 'POWER' | 'FUEL' | 'ANTENNA' | 'LOGISTICS' | 'TOP' | 'OVERVIEW';
+
+interface ZonePathDef {
+  from: string;
+  to: string;
+}
+
+interface ZoneDef {
+  id: ZoneId;
+  label: string;
+  focusAnchors: string[];
+  paths: ZonePathDef[];
+  color: number;
+}
+
+const ZONE_DEFS: ZoneDef[] = [
+  { id: 'OVERVIEW', label: 'Overview', focusAnchors: [], paths: [], color: 0xffffff },
+  { id: 'MAIN_BUILDING', label: 'Main Building', focusAnchors: ['ANCHOR_MAIN_BUILDING'], paths: [], color: 0x10b981 },
+  {
+    id: 'POWER', label: 'Power Zone',
+    focusAnchors: ['ANCHOR_GEN_01', 'ANCHOR_GEN_02', 'ANCHOR_GEN_03', 'ANCHOR_MAIN_BUILDING'],
+    paths: [
+      { from: 'ANCHOR_GEN_01', to: 'ANCHOR_MAIN_BUILDING' },
+      { from: 'ANCHOR_GEN_02', to: 'ANCHOR_MAIN_BUILDING' },
+      { from: 'ANCHOR_GEN_03', to: 'ANCHOR_MAIN_BUILDING' }
+    ],
+    color: 0x38bdf8
+  },
+  {
+    id: 'FUEL', label: 'Fuel Zone',
+    focusAnchors: ['ANCHOR_FUEL_TANK_01', 'ANCHOR_FUEL_TANK_02', 'ANCHOR_FUEL_PUMP_STATION_01', 'ANCHOR_GEN_01', 'ANCHOR_GEN_02', 'ANCHOR_GEN_03'],
+    paths: [
+      { from: 'ANCHOR_FUEL_TANK_01', to: 'ANCHOR_FUEL_PUMP_STATION_01' },
+      { from: 'ANCHOR_FUEL_TANK_02', to: 'ANCHOR_FUEL_PUMP_STATION_01' },
+      { from: 'ANCHOR_FUEL_PUMP_STATION_01', to: 'ANCHOR_GEN_01' },
+      { from: 'ANCHOR_FUEL_PUMP_STATION_01', to: 'ANCHOR_GEN_02' },
+      { from: 'ANCHOR_FUEL_PUMP_STATION_01', to: 'ANCHOR_GEN_03' }
+    ],
+    color: 0xf59e0b
+  },
+  {
+    id: 'ANTENNA', label: 'Antenna Zone',
+    focusAnchors: ['ANCHOR_ANTENNA_01', 'ANCHOR_ANTENNA_02', 'ANCHOR_ANTENNA_03', 'ANCHOR_SATELLITE_COMM_01'],
+    paths: [
+      { from: 'ANCHOR_ANTENNA_01', to: 'ANCHOR_SATELLITE_COMM_01' },
+      { from: 'ANCHOR_ANTENNA_02', to: 'ANCHOR_SATELLITE_COMM_01' },
+      { from: 'ANCHOR_ANTENNA_03', to: 'ANCHOR_SATELLITE_COMM_01' }
+    ],
+    color: 0x60a5fa
+  },
+  {
+    id: 'LOGISTICS', label: 'Logistics Zone',
+    focusAnchors: ['ANCHOR_SHIP_01', 'ANCHOR_CONTAINER_AREA_01', 'ANCHOR_MAIN_BUILDING'],
+    paths: [
+      { from: 'ANCHOR_SHIP_01', to: 'ANCHOR_CONTAINER_AREA_01' },
+      { from: 'ANCHOR_CONTAINER_AREA_01', to: 'ANCHOR_MAIN_BUILDING' }
+    ],
+    color: 0xfb923c
+  },
+  { id: 'TOP', label: 'Top View', focusAnchors: [], paths: [], color: 0xffffff }
+];
 
 const MODE_META: { id: VisualizationMode; label: string; icon: React.ReactNode; enabled: boolean }[] = [
   { id: 'NORMAL', label: 'Normal', icon: <Video size={13} />, enabled: true },
@@ -147,7 +244,16 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
   const [showAnchors, setShowAnchors] = useState(false);
   const [anchorScreenPositions, setAnchorScreenPositions] = useState<{ name: string; assetId: string; x: number; y: number; visible: boolean }[]>([]);
   const [activeMode, setActiveMode] = useState<VisualizationMode>('NORMAL');
-  const [activeZone, setActiveZone] = useState<string>('OVERVIEW');
+  const [activeZone, setActiveZone] = useState<ZoneId>('OVERVIEW');
+  // Vision layer: WHICH 3D model is shown (three real, separate GLBs that mutually hide/
+  // show each other) — orthogonal to activeMode, which controls HOW the currently-shown
+  // model's markers are analyzed/colored.
+  const [visionLayer, setVisionLayer] = useState<VisionLayer>('FULL');
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const [communicationLoading, setCommunicationLoading] = useState(false);
+  const [communicationError, setCommunicationError] = useState<string | null>(null);
+  const [hoveredCommPath, setHoveredCommPath] = useState<{ tooltip: string } | null>(null);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -177,6 +283,30 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
   const flyTargetLookRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const flyStartTimeRef = useRef<number>(0);
   const FLY_MS = 700;
+  // Three real, independently-cached GLB scenes living in the SAME THREE.Scene at all times —
+  // switching vision layers only flips .visible on the relevant Group(s), never rebuilds,
+  // never re-fetches, never touches the camera.
+  const visionLayerRef = useRef<VisionLayer>('FULL');
+  const pipelineRootRef = useRef<THREE.Group | null>(null);
+  const pipelineAnchorWorldPositionsRef = useRef<Record<string, THREE.Vector3>>({});
+  const bharatiMarkersGroupRef = useRef<THREE.Group | null>(null);
+  // Communication Vision: the cached GLB itself, plus a decorative overlay group (node
+  // markers, runtime paths, flow particles, dedicated lighting) rebuilt fresh each effect
+  // run — these are cheap Three.js primitives, unlike the GLB, so re-creating them on a
+  // station switch is fine and keeps them in sync with real anchor positions every time.
+  const communicationRootRef = useRef<THREE.Group | null>(null);
+  const communicationGroupRef = useRef<THREE.Group | null>(null);
+  const communicationAnchorWorldPositionsRef = useRef<Record<string, THREE.Vector3>>({});
+  const communicationPathHitsRef = useRef<{ mesh: THREE.Mesh; tooltip: string }[]>([]);
+  const communicationParticlesRef = useRef<{ mesh: THREE.Mesh; from: THREE.Vector3; to: THREE.Vector3; t: number; speed: number }[]>([]);
+  const communicationPulseMatsRef = useRef<(THREE.Material & { emissiveIntensity: number })[]>([]);
+  // Zone navigation: a MINIMAL, reusable flow layer — camera focus + a few thin, subtle
+  // illuminated paths + a highlight ring per relevant anchor. Independent of vision (which
+  // GLB is visible) and independent of analysis mode. Resolves endpoints from whichever
+  // vision's model is CURRENTLY active, so it's correct regardless of which GLB is shown.
+  const zoneFlowGroupRef = useRef<THREE.Group | null>(null);
+  const zoneFlowDisposablesRef = useRef<(THREE.BufferGeometry | THREE.Material)[]>([]);
+  const zoneFlowParticlesRef = useRef<{ mesh: THREE.Mesh; from: THREE.Vector3; to: THREE.Vector3; t: number; speed: number }[]>([]);
 
   useEffect(() => {
     showAnchorsRef.current = showAnchors;
@@ -185,6 +315,18 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
   useEffect(() => {
     activeModeRef.current = activeMode;
   }, [activeMode]);
+
+  // Vision switch: instant, reversible visibility flip between the three already-loaded
+  // model groups — mutually exclusive, exactly one visible at a time. Never touches camera
+  // position, selectedAsset, or telemetry.
+  useEffect(() => {
+    visionLayerRef.current = visionLayer;
+    if (bharatiRootRef.current) bharatiRootRef.current.visible = visionLayer === 'FULL';
+    if (bharatiMarkersGroupRef.current) bharatiMarkersGroupRef.current.visible = visionLayer === 'FULL';
+    if (pipelineRootRef.current) pipelineRootRef.current.visible = visionLayer === 'ENGINEERING';
+    if (communicationRootRef.current) communicationRootRef.current.visible = visionLayer === 'COMMUNICATION';
+    if (communicationGroupRef.current) communicationGroupRef.current.visible = visionLayer === 'COMMUNICATION';
+  }, [visionLayer]);
 
   // Reset the station/info panels whenever the active station changes.
   useEffect(() => {
@@ -349,6 +491,14 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
     markerVisualsRef.current = [];
     bharatiAnchorDebugRef.current = [];
     bharatiRootRef.current = null;
+    pipelineRootRef.current = null;
+    bharatiMarkersGroupRef.current = null;
+    communicationRootRef.current = null;
+    communicationGroupRef.current = null;
+    communicationPathHitsRef.current = [];
+    communicationParticlesRef.current = [];
+    communicationPulseMatsRef.current = [];
+    zoneFlowGroupRef.current = null;
 
     // Helper to add a clickable, dim/glow/mode-reactive marker at an explicit world position.
     const createMarkerAt = (
@@ -365,7 +515,7 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
       });
       const marker = new THREE.Mesh(markerGeo, markerMat);
       marker.position.set(x, y, z);
-      scene.add(marker);
+      (bharatiMarkersGroupRef.current || scene).add(marker);
       localDisposables.push(markerGeo, markerMat);
 
       const ringGeo = new THREE.RingGeometry(0.7, 0.9, 24);
@@ -373,7 +523,7 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
       ring.position.set(x, y + 1.6, z);
-      scene.add(ring);
+      (bharatiMarkersGroupRef.current || scene).add(ring);
       localDisposables.push(ringGeo, ringMat);
 
       const hotspot = hotspotFor(marker);
@@ -422,6 +572,14 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
       setGlbLoading(true);
       setGlbError(null);
       setGlbProgress(0);
+
+      // Full Vision markers live in their own Group so vision-switching can hide the whole
+      // set at once — Engineering Vision shows pipeline.glb's own geometry with no marker
+      // overlay forced onto it.
+      const bharatiMarkersGroup = new THREE.Group();
+      bharatiMarkersGroup.visible = visionLayerRef.current === 'FULL';
+      scene.add(bharatiMarkersGroup);
+      bharatiMarkersGroupRef.current = bharatiMarkersGroup;
 
       const placeBharatiHotspots = (anchorWorldPositions: Record<string, THREE.Vector3>) => {
         const debugList: { name: string; assetId: string; worldPos: THREE.Vector3 }[] = [];
@@ -483,6 +641,162 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
         })
         .finally(() => {
           if (!cancelled) setGlbLoading(false);
+        });
+
+      // Preload pipeline.glb (Engineering Vision) IN PARALLEL with the Full Vision model —
+      // "ideally preload ... so switching feels fast". Independent try/fetch: a failure here
+      // never affects Full Vision, and this never re-fetches on a later vision toggle since
+      // the promise is cached at module scope.
+      setPipelineLoading(true);
+      setPipelineError(null);
+      loadPipelineModel()
+        .then(({ scene: pipelineScene, anchorWorldPositions: pipelineAnchors }) => {
+          if (cancelled) return;
+          pipelineScene.visible = visionLayerRef.current === 'ENGINEERING';
+          scene.add(pipelineScene);
+          pipelineRootRef.current = pipelineScene;
+          pipelineAnchorWorldPositionsRef.current = pipelineAnchors;
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          console.error('Engineering model (pipeline.glb) failed to load:', err);
+          setPipelineError('Engineering model failed to load.');
+        })
+        .finally(() => {
+          if (!cancelled) setPipelineLoading(false);
+        });
+
+      // Preload + build Communication Vision IN PARALLEL with the other two models — its
+      // overlay (nodes/paths/particles/lighting) is cheap Three.js primitives built fresh
+      // each run from the model's real anchor positions, same pattern as the GLB caching.
+      setCommunicationLoading(true);
+      setCommunicationError(null);
+      loadCommunicationModel()
+        .then(({ scene: commScene, anchorWorldPositions: commAnchors }) => {
+          if (cancelled) return;
+          commScene.visible = visionLayerRef.current === 'COMMUNICATION';
+          scene.add(commScene);
+          communicationRootRef.current = commScene;
+          communicationAnchorWorldPositionsRef.current = commAnchors;
+
+          const commGroup = new THREE.Group();
+          commGroup.visible = visionLayerRef.current === 'COMMUNICATION';
+
+          // Dedicated lighting for Communication Vision — soft fill + subtle rim, low
+          // intensity, cyan-tinted. Never overexposes; the base scene's ambient/sun/rim
+          // lights still apply too (this only adds to them while this vision is active).
+          const commFill = new THREE.HemisphereLight(0x1e3a5f, 0x0a1220, 0.5);
+          commGroup.add(commFill);
+          const commRim = new THREE.DirectionalLight(0x38bdf8, 0.35);
+          commRim.position.set(-20, 15, -20);
+          commGroup.add(commRim);
+
+          const commNodeAnchorNames = [
+            COMMUNICATION_ANCHOR_NAMES.ROOM,
+            COMMUNICATION_ANCHOR_NAMES.ANTENNA_01,
+            COMMUNICATION_ANCHOR_NAMES.ANTENNA_02,
+            COMMUNICATION_ANCHOR_NAMES.ANTENNA_03,
+            COMMUNICATION_ANCHOR_NAMES.SATELLITE
+          ];
+          // All five real anchors share the one real backend comms asset (the station only
+          // tracks one communications system, not one per antenna) — same "several anchors,
+          // one real telemetry source" pattern already used for the fuel depot.
+          const commBackendAsset = assets.find(a => a.assetId === COMMUNICATION_BACKEND_ASSET_ID);
+          const commNodeColor = commBackendAsset ? statusColor(commBackendAsset) : 0x38bdf8;
+
+          commNodeAnchorNames.forEach((name) => {
+            const wp = commAnchors[name];
+            if (!wp) return;
+
+            // Optional point light at each important communication node — subtle, never
+            // the sole light source.
+            const pointLight = new THREE.PointLight(0x60a5fa, 0.6, 8);
+            pointLight.position.copy(wp);
+            commGroup.add(pointLight);
+
+            const nodeGeo = new THREE.OctahedronGeometry(0.5, 0);
+            const nodeMat = new THREE.MeshStandardMaterial({
+              color: commNodeColor, emissive: commNodeColor, emissiveIntensity: 0.6,
+              roughness: 0.3, metalness: 0.3, transparent: true, opacity: 0.95
+            });
+            const node = new THREE.Mesh(nodeGeo, nodeMat);
+            node.position.copy(wp);
+            commGroup.add(node);
+            localDisposables.push(nodeGeo, nodeMat);
+            communicationPulseMatsRef.current.push(nodeMat);
+            // Reuse the EXISTING hotspot/click/hover/fly-to system directly — this is the
+            // same real RADOME-01 asset the Full Vision antenna/satcom markers already open,
+            // so clicking any comm node here opens the real telemetry drawer for free.
+            if (commBackendAsset) {
+              clickableRef.current.push({ mesh: node, kind: 'asset', asset: commBackendAsset, label: COMMUNICATION_NODE_LABEL[name] || name });
+            }
+
+            const ringGeo = new THREE.RingGeometry(0.65, 0.8, 24);
+            const ringMat = new THREE.MeshBasicMaterial({ color: commNodeColor, side: THREE.DoubleSide, transparent: true, opacity: 0.7 });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.set(wp.x, wp.y + 1.1, wp.z);
+            commGroup.add(ring);
+            localDisposables.push(ringGeo, ringMat);
+          });
+
+          // communication.glb has no reusable cable/line mesh (its curve/room_to_d* nodes
+          // are transform-only empties with no geometry) — paths are built at runtime
+          // between the model's real anchor positions. Rendered as thin tubes (not raw
+          // THREE.Line) so hover raycasting actually works.
+          COMMUNICATION_PATHS.forEach((path) => {
+            const a = commAnchors[path.from];
+            const b = commAnchors[path.to];
+            if (!a || !b) return;
+            const color = COMMUNICATION_PATH_COLOR[path.type];
+
+            const curve = new THREE.LineCurve3(a, b);
+            const tubeGeo = new THREE.TubeGeometry(curve, 8, 0.06, 6, false);
+            const tubeMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4 });
+            const tube = new THREE.Mesh(tubeGeo, tubeMat);
+            commGroup.add(tube);
+            localDisposables.push(tubeGeo, tubeMat);
+            communicationPathHitsRef.current.push({ mesh: tube, tooltip: path.tooltip });
+
+            // ROOM→ANTENNA: faster, denser, small packets. ANTENNA→SATELLITE: slower,
+            // larger pulses with a longer light-trail look (an elongated streak instead of
+            // several trailing spheres — cheaper, same visual read).
+            const isInternal = path.type === 'INTERNAL';
+            const particleCount = isInternal ? 4 : 2;
+            const baseSpeed = isInternal ? 0.5 : 0.15;
+            for (let i = 0; i < particleCount; i++) {
+              let particleMesh: THREE.Mesh;
+              if (isInternal) {
+                const pGeo = new THREE.SphereGeometry(0.11, 8, 8);
+                const pMat = new THREE.MeshBasicMaterial({ color });
+                particleMesh = new THREE.Mesh(pGeo, pMat);
+                localDisposables.push(pGeo, pMat);
+              } else {
+                const dir = new THREE.Vector3().subVectors(b, a).normalize();
+                const pGeo = new THREE.CylinderGeometry(0.09, 0.14, 0.9, 8);
+                const pMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
+                particleMesh = new THREE.Mesh(pGeo, pMat);
+                particleMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+                localDisposables.push(pGeo, pMat);
+              }
+              commGroup.add(particleMesh);
+              communicationParticlesRef.current.push({
+                mesh: particleMesh, from: a.clone(), to: b.clone(),
+                t: i / particleCount, speed: baseSpeed * (0.85 + Math.random() * 0.3)
+              });
+            }
+          });
+
+          scene.add(commGroup);
+          communicationGroupRef.current = commGroup;
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          console.error('Communication model (communication.glb) failed to load:', err);
+          setCommunicationError('Communication model failed to load.');
+        })
+        .finally(() => {
+          if (!cancelled) setCommunicationLoading(false);
         });
     } else {
       // --- MAITRI 3D ARCHITECTURE (Schirmacher Oasis) --- unchanged procedural geometry
@@ -564,11 +878,29 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
         const found = clickableRef.current.find(h => h.mesh === intersects[0].object);
         if (found) {
           setHoveredHotspot(found);
+          setHoveredCommPath(null);
           container.style.cursor = 'pointer';
           return;
         }
       }
       setHoveredHotspot(null);
+
+      // Communication path hover tooltip ("Internal Data Link" / "Satellite Communication
+      // Link") — secondary to node hotspots, only checked when Communication Vision is
+      // actually showing.
+      if (visionLayerRef.current === 'COMMUNICATION' && communicationPathHitsRef.current.length > 0) {
+        const pathMeshes = communicationPathHitsRef.current.map(p => p.mesh);
+        const pathHits = raycaster.intersectObjects(pathMeshes, false);
+        if (pathHits.length > 0) {
+          const foundPath = communicationPathHitsRef.current.find(p => p.mesh === pathHits[0].object);
+          if (foundPath) {
+            setHoveredCommPath({ tooltip: foundPath.tooltip });
+            container.style.cursor = 'pointer';
+            return;
+          }
+        }
+      }
+      setHoveredCommPath(null);
       container.style.cursor = 'default';
     };
 
@@ -687,6 +1019,31 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
         });
       }
 
+      // Communication Vision: continuous packet-flow animation + subtle node pulse. Only
+      // runs while this vision is actually visible — cheap either way (≤5 nodes, ≤6 paths,
+      // ≤20 particles), but gating avoids any wasted work when hidden.
+      if (visionLayerRef.current === 'COMMUNICATION' && communicationGroupRef.current?.visible) {
+        communicationParticlesRef.current.forEach((p) => {
+          p.t += p.speed * 0.016;
+          if (p.t > 1) p.t -= 1;
+          p.mesh.position.lerpVectors(p.from, p.to, p.t);
+        });
+        const nodePulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.0035);
+        communicationPulseMatsRef.current.forEach((m) => {
+          m.emissiveIntensity = 0.4 + nodePulse * 0.5;
+        });
+      }
+
+      // Zone navigation's minimal flow pulses — at most a handful of particles, animated
+      // only while a zone with paths is actually active.
+      if (zoneFlowGroupRef.current) {
+        zoneFlowParticlesRef.current.forEach((p) => {
+          p.t += p.speed * 0.016;
+          if (p.t > 1) p.t -= 1;
+          p.mesh.position.lerpVectors(p.from, p.to, p.t);
+        });
+      }
+
       // Camera fly-to animation (asset selection or zone preset).
       if (flyTargetPosRef.current && flyStartPosRef.current) {
         const elapsed = performance.now() - flyStartTimeRef.current;
@@ -703,7 +1060,7 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
 
       // Debug "Show Anchors" label projection — throttled to ~20fps and skipped entirely
       // when the toggle is off, so it costs nothing during normal use.
-      if (showAnchorsRef.current && stationId === 'BHARATI' && frameCount % 3 === 0 && bharatiAnchorDebugRef.current.length > 0) {
+      if (showAnchorsRef.current && visionLayerRef.current === 'FULL' && stationId === 'BHARATI' && frameCount % 3 === 0 && bharatiAnchorDebugRef.current.length > 0) {
         const next = bharatiAnchorDebugRef.current.map((a) => {
           projected.copy(a.worldPos).project(camera);
           return {
@@ -741,20 +1098,109 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
       container.removeEventListener('mousemove', handleMouseDrag);
       container.removeEventListener('wheel', handleWheel);
       window.removeEventListener('resize', handleResize);
-      // The cached Bharati GLB is shared across mounts — detach it, but never dispose its
-      // (cached, reused) geometries/materials.
+      // All three cached GLBs are shared across mounts — detach them, but never dispose
+      // their (cached, reused) geometries/materials. Real disposal only belongs at final
+      // app teardown, which this component doesn't currently have a hook for (same
+      // precedent as the existing Full Vision model caching).
       if (bharatiRootRef.current) {
         scene.remove(bharatiRootRef.current);
       }
-      // Everything created fresh for this run (hotspot markers/rings) is safe to dispose.
+      if (pipelineRootRef.current) {
+        scene.remove(pipelineRootRef.current);
+      }
+      if (communicationRootRef.current) {
+        scene.remove(communicationRootRef.current);
+      }
+      // Everything created fresh for this run (hotspot markers/rings, communication nodes/
+      // paths/particles/lights) is safe to dispose. The zone flow layer is independent of
+      // this effect's lifecycle (rebuilt by its own effect on activeZone/visionLayer
+      // changes) but still belongs to this scene, so it's cleared here too.
+      if (zoneFlowGroupRef.current) {
+        scene.remove(zoneFlowGroupRef.current);
+      }
+      zoneFlowDisposablesRef.current.forEach((d) => d.dispose());
+      zoneFlowDisposablesRef.current = [];
+      zoneFlowParticlesRef.current = [];
       localDisposables.forEach((d) => d.dispose());
       renderer.dispose();
     };
   }, [stationId, vibrationOverlay]);
 
-  // Camera zone presets (Section 14) — computed at runtime from the real anchor cluster per
-  // category, never hardcoded. "Reset"/"Overview" returns to the auto-framed home view.
-  const flyToZone = (zone: string) => {
+  // Resolve anchor world positions from whichever vision's model is CURRENTLY active — this
+  // is what makes zone navigation correct regardless of which GLB is visible (Section:
+  // "resolve endpoints from the actual loaded model/anchor configuration").
+  const getActiveAnchorPositions = (): Record<string, THREE.Vector3> => {
+    if (visionLayerRef.current === 'ENGINEERING') return pipelineAnchorWorldPositionsRef.current;
+    if (visionLayerRef.current === 'COMMUNICATION') return communicationAnchorWorldPositionsRef.current;
+    return anchorWorldPositionsRef.current;
+  };
+
+  // Rebuilds the MINIMAL zone flow layer (a few thin paths + one slow pulse each + a subtle
+  // highlight ring per focus anchor) for the current activeZone, using only anchors that
+  // actually resolve in the active vision's model. Never a full relationship graph, never
+  // more than a handful of primitives. Clears the previous zone's flow first — cheap runtime
+  // geometry, safe to dispose/recreate — so only one zone's flow is ever visible.
+  const rebuildZoneFlow = () => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    if (zoneFlowGroupRef.current) scene.remove(zoneFlowGroupRef.current);
+    zoneFlowDisposablesRef.current.forEach((d) => d.dispose());
+    zoneFlowDisposablesRef.current = [];
+    zoneFlowParticlesRef.current = [];
+    zoneFlowGroupRef.current = null;
+
+    const zoneDef = ZONE_DEFS.find((z) => z.id === activeZone);
+    if (!zoneDef || zoneDef.paths.length === 0) return; // TOP/OVERVIEW/MAIN_BUILDING: camera focus only, no flow
+
+    const positions = getActiveAnchorPositions();
+    const group = new THREE.Group();
+    let any = false;
+
+    zoneDef.paths.forEach((p) => {
+      const a = positions[p.from];
+      const b = positions[p.to];
+      if (!a || !b) return; // anchor doesn't exist in the active vision's model — skip, never invent
+      any = true;
+
+      const curve = new THREE.LineCurve3(a, b);
+      const tubeGeo = new THREE.TubeGeometry(curve, 6, 0.035, 6, false); // thin, subtle
+      const tubeMat = new THREE.MeshBasicMaterial({ color: zoneDef.color, transparent: true, opacity: 0.26 });
+      const tube = new THREE.Mesh(tubeGeo, tubeMat);
+      group.add(tube);
+      zoneFlowDisposablesRef.current.push(tubeGeo, tubeMat);
+
+      // One small, slow pulse per path — minimal, not a particle swarm.
+      const pGeo = new THREE.SphereGeometry(0.08, 8, 8);
+      const pMat = new THREE.MeshBasicMaterial({ color: zoneDef.color, transparent: true, opacity: 0.8 });
+      const pulse = new THREE.Mesh(pGeo, pMat);
+      group.add(pulse);
+      zoneFlowDisposablesRef.current.push(pGeo, pMat);
+      zoneFlowParticlesRef.current.push({ mesh: pulse, from: a.clone(), to: b.clone(), t: Math.random(), speed: 0.09 });
+    });
+
+    zoneDef.focusAnchors.forEach((name) => {
+      const wp = positions[name];
+      if (!wp) return;
+      any = true;
+      const ringGeo = new THREE.RingGeometry(0.75, 0.86, 24);
+      const ringMat = new THREE.MeshBasicMaterial({ color: zoneDef.color, side: THREE.DoubleSide, transparent: true, opacity: 0.5 });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(wp.x, wp.y + 1.3, wp.z);
+      group.add(ring);
+      zoneFlowDisposablesRef.current.push(ringGeo, ringMat);
+    });
+
+    if (any) {
+      scene.add(group);
+      zoneFlowGroupRef.current = group;
+    }
+  };
+
+  // Zone navigation: camera focus + minimal flow ONLY — never touches Vision or Analysis
+  // Mode state, so both stay exactly as they were.
+  const flyToZone = (zone: ZoneId) => {
     setActiveZone(zone);
     const camera = cameraRef.current;
     if (!camera) return;
@@ -771,22 +1217,49 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
       camera.lookAt(0, orbitTargetYRef.current, 0);
       return;
     }
-    if (zone === 'MAIN_BUILDING') {
-      const wp = anchorWorldPositionsRef.current['ANCHOR_MAIN_BUILDING'];
-      if (wp) beginFlyTo(wp, 16);
-      return;
-    }
-    const category = zone as BharatiAnchorCategory;
-    const box = categoryBoundsFromAnchors(category, anchorWorldPositionsRef.current);
-    if (box) {
-      const center = box.getCenter(new THREE.Vector3());
-      const size = box.getSize(new THREE.Vector3());
-      const dist = Math.max(size.x, size.y, size.z, 6) * 1.8 + 10;
-      beginFlyTo(center, dist);
-    }
+    const zoneDef = ZONE_DEFS.find((z) => z.id === zone);
+    if (!zoneDef) return;
+    const positions = getActiveAnchorPositions();
+    const box = new THREE.Box3();
+    let found = false;
+    zoneDef.focusAnchors.forEach((name) => {
+      const wp = positions[name];
+      if (wp) { box.expandByPoint(wp); found = true; }
+    });
+    if (!found) return; // this zone has no real anchors in the currently active vision's model
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const dist = Math.max(size.x, size.y, size.z, 6) * 1.8 + 10;
+    beginFlyTo(center, dist);
   };
 
+  // Keep the zone flow in sync with BOTH which zone is selected and which vision is active
+  // (Full Vision + Power Zone must resolve from BHARATI_TEXTURE_TEST.glb's anchors;
+  // Engineering Vision + Power Zone from pipeline.glb's) — without moving the camera or
+  // rebuilding the GLB scene.
+  useEffect(() => {
+    rebuildZoneFlow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeZone, visionLayer, stationId]);
+
   const lastSyncLabel = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) + ' UTC';
+
+  // Live Communication Vision status — derived from the real (simulated) RADOME-01 asset
+  // that all comm nodes share, never a separate invented value. The animated packets are a
+  // visualization of this station's topology, not a claim of measured real-time traffic.
+  const commAsset = assets.find(a => a.assetId === COMMUNICATION_BACKEND_ASSET_ID);
+  const commNetworkStatus: 'ONLINE' | 'DEGRADED' | 'OFFLINE' = !commAsset || commAsset.status === 'offline'
+    ? 'OFFLINE'
+    : (commAsset.status === 'warning' || commAsset.status === 'critical') ? 'DEGRADED' : 'ONLINE';
+  const commNetworkColor = commNetworkStatus === 'ONLINE' ? 'var(--status-normal)' : commNetworkStatus === 'DEGRADED' ? 'var(--status-warning)' : 'var(--status-critical)';
+
+  // Read directly (not via getActiveAnchorPositions, which is defined for use inside
+  // handlers) so zone-button availability re-evaluates on render — these refs are populated
+  // synchronously inside each model's load .then(), just before the matching xLoading state
+  // flips to false and triggers the re-render that picks this up.
+  const activeAnchorPositions = visionLayer === 'ENGINEERING' ? pipelineAnchorWorldPositionsRef.current
+    : visionLayer === 'COMMUNICATION' ? communicationAnchorWorldPositionsRef.current
+    : anchorWorldPositionsRef.current;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: '480px', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
@@ -838,6 +1311,34 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          {stationId === 'BHARATI' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 3, pointerEvents: 'auto', background: 'rgba(6, 14, 26, 0.7)', borderRadius: 9999, padding: 3, border: '1px solid var(--panel-border)' }}>
+              <button
+                className={`btn ${visionLayer === 'FULL' ? 'btn-primary' : 'btn-outline'}`}
+                style={{ padding: '4px 10px', fontSize: '0.68rem', borderRadius: 9999 }}
+                onClick={() => setVisionLayer('FULL')}
+                title="BHARATI_TEXTURE_TEST.glb — realistic photogrammetry model"
+              >
+                <Eye size={12} /> Full Vision
+              </button>
+              <button
+                className={`btn ${visionLayer === 'ENGINEERING' ? 'btn-primary' : 'btn-outline'}`}
+                style={{ padding: '4px 10px', fontSize: '0.68rem', borderRadius: 9999 }}
+                onClick={() => setVisionLayer('ENGINEERING')}
+                title="pipeline.glb — the engineering model, shown in place of the photogrammetry model"
+              >
+                <Workflow size={12} /> Engineering Vision
+              </button>
+              <button
+                className={`btn ${visionLayer === 'COMMUNICATION' ? 'btn-primary' : 'btn-outline'}`}
+                style={{ padding: '4px 10px', fontSize: '0.68rem', borderRadius: 9999 }}
+                onClick={() => setVisionLayer('COMMUNICATION')}
+                title="communication.glb — the communication infrastructure model, shown in place of the photogrammetry model"
+              >
+                <SatelliteDish size={12} /> Communication Vision
+              </button>
+            </div>
+          )}
           <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>Last sync: {lastSyncLabel}</div>
           <DataSourceBadge kind="SIMULATED" label="LIVE SIMULATION" detail="Telemetry is generated by the POLAR-TWIN prototype simulator, refreshed continuously — SIMULATED / DEMONSTRATION, not a live feed from Bharati." />
         </div>
@@ -881,24 +1382,21 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
           background: 'rgba(7, 18, 33, 0.85)', backdropFilter: 'blur(8px)',
           padding: '6px', borderRadius: 'var(--radius-md)', border: '1px solid var(--panel-border)', zIndex: 20
         }}>
-          {[
-            { id: 'OVERVIEW', label: 'Overview' },
-            { id: 'MAIN_BUILDING', label: 'Main Building' },
-            { id: 'POWER', label: 'Power Zone' },
-            { id: 'FUEL', label: 'Fuel Zone' },
-            { id: 'COMMUNICATION', label: 'Comm Zone' },
-            { id: 'LOGISTICS', label: 'Logistics Zone' },
-            { id: 'TOP', label: 'Top View' }
-          ].map((z) => (
-            <button
-              key={z.id}
-              className={`btn ${activeZone === z.id ? 'btn-cyan' : 'btn-outline'}`}
-              style={{ padding: '5px 9px', fontSize: '0.68rem' }}
-              onClick={() => flyToZone(z.id)}
-            >
-              {z.label}
-            </button>
-          ))}
+          {ZONE_DEFS.map((z) => {
+            const available = z.id === 'OVERVIEW' || z.id === 'TOP' || z.focusAnchors.some((name) => !!activeAnchorPositions[name]);
+            return (
+              <button
+                key={z.id}
+                className={`btn ${activeZone === z.id ? 'btn-cyan' : 'btn-outline'}`}
+                style={{ padding: '5px 9px', fontSize: '0.68rem', opacity: available ? 1 : 0.4, cursor: available ? 'pointer' : 'not-allowed' }}
+                disabled={!available}
+                title={available ? undefined : `${z.label} has no matching anchors in the current vision's model`}
+                onClick={() => available && flyToZone(z.id)}
+              >
+                {z.label}
+              </button>
+            );
+          })}
           <button
             className="btn btn-outline"
             style={{ padding: '5px 9px', fontSize: '0.68rem' }}
@@ -910,8 +1408,8 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
         </div>
       )}
 
-      {/* Debug anchor labels — dev-only, default OFF */}
-      {stationId === 'BHARATI' && showAnchors && anchorScreenPositions.filter(a => a.visible).map((a) => (
+      {/* Debug anchor labels — dev-only, default OFF, Full Vision only */}
+      {stationId === 'BHARATI' && visionLayer === 'FULL' && showAnchors && anchorScreenPositions.filter(a => a.visible).map((a) => (
         <div key={a.name} style={{
           position: 'absolute', left: a.x, top: a.y, transform: 'translate(-50%, -120%)',
           pointerEvents: 'none', background: 'rgba(6, 14, 26, 0.85)', border: '1px solid #facc15',
@@ -945,6 +1443,54 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
           border: '1px solid rgba(239, 68, 68, 0.35)', fontSize: '0.75rem', color: '#fca5a5', maxWidth: 280
         }}>
           <AlertTriangle size={14} /> {glbError}
+        </div>
+      )}
+
+      {stationId === 'BHARATI' && visionLayer === 'ENGINEERING' && pipelineLoading && (
+        <div style={{
+          position: 'absolute', bottom: 46, right: 16,
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(7, 18, 33, 0.9)', backdropFilter: 'blur(8px)',
+          padding: '8px 14px', borderRadius: 'var(--radius-md)',
+          border: '1px solid var(--panel-border)', fontSize: '0.75rem', color: 'var(--accent-cyan)'
+        }}>
+          <RefreshCw size={14} className="radar-spinner" /> Loading engineering model…
+        </div>
+      )}
+
+      {stationId === 'BHARATI' && visionLayer === 'ENGINEERING' && pipelineError && (
+        <div style={{
+          position: 'absolute', bottom: 46, right: 16,
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(239, 68, 68, 0.12)', backdropFilter: 'blur(8px)',
+          padding: '8px 14px', borderRadius: 'var(--radius-md)',
+          border: '1px solid rgba(239, 68, 68, 0.35)', fontSize: '0.75rem', color: '#fca5a5', maxWidth: 280
+        }}>
+          <AlertTriangle size={14} /> {pipelineError}
+        </div>
+      )}
+
+      {stationId === 'BHARATI' && visionLayer === 'COMMUNICATION' && communicationLoading && (
+        <div style={{
+          position: 'absolute', bottom: 46, right: 16,
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(7, 18, 33, 0.9)', backdropFilter: 'blur(8px)',
+          padding: '8px 14px', borderRadius: 'var(--radius-md)',
+          border: '1px solid var(--panel-border)', fontSize: '0.75rem', color: 'var(--accent-cyan)'
+        }}>
+          <RefreshCw size={14} className="radar-spinner" /> Loading communication model…
+        </div>
+      )}
+
+      {stationId === 'BHARATI' && visionLayer === 'COMMUNICATION' && communicationError && (
+        <div style={{
+          position: 'absolute', bottom: 46, right: 16,
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(239, 68, 68, 0.12)', backdropFilter: 'blur(8px)',
+          padding: '8px 14px', borderRadius: 'var(--radius-md)',
+          border: '1px solid rgba(239, 68, 68, 0.35)', fontSize: '0.75rem', color: '#fca5a5', maxWidth: 280
+        }}>
+          <AlertTriangle size={14} /> {communicationError}
         </div>
       )}
 
@@ -1026,6 +1572,37 @@ export const TwinCanvas3D: React.FC<TwinCanvas3DProps> = ({
               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Click to inspect</div>
             </>
           )}
+        </div>
+      )}
+
+      {/* Communication path hover tooltip — "Internal Data Link" / "Satellite Communication Link" */}
+      {!hoveredHotspot && hoveredCommPath && (
+        <div style={{
+          position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(11, 23, 40, 0.92)', backdropFilter: 'blur(12px)',
+          border: '1px solid var(--panel-border-bright)', borderRadius: 'var(--radius-md)',
+          padding: '8px 16px', fontSize: '0.8rem', fontWeight: 700, color: '#fff',
+          boxShadow: 'var(--shadow-lg)', pointerEvents: 'none', zIndex: 25
+        }}>
+          {hoveredCommPath.tooltip}
+        </div>
+      )}
+
+      {/* Communication Vision live status indicator */}
+      {stationId === 'BHARATI' && visionLayer === 'COMMUNICATION' && (
+        <div style={{
+          position: 'absolute', bottom: 12, right: 16,
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: 'rgba(7, 18, 33, 0.88)', backdropFilter: 'blur(8px)',
+          padding: '6px 14px', borderRadius: 'var(--radius-md)',
+          border: '1px solid var(--panel-border)', fontSize: '0.7rem', zIndex: 20
+        }}>
+          <span style={{ fontWeight: 700, color: '#fff', letterSpacing: '0.03em' }}>COMMUNICATION NETWORK</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: commNetworkColor, boxShadow: '0 0 6px currentColor', color: commNetworkColor }} />
+            <span style={{ color: commNetworkColor, fontWeight: 700 }}>{commNetworkStatus}</span>
+          </span>
+          <DataSourceBadge kind="SIMULATED" label="SIMULATED" detail="Network status is derived from the same simulated RADOME-01 asset used elsewhere in POLAR-TWIN. The animated packets visualize the station's communication topology — they are not measured real-time network traffic." />
         </div>
       )}
 
